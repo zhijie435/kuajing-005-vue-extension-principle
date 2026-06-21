@@ -214,11 +214,18 @@ class ExtensionPointManager {
       } else if (pointConfig) {
         const existingIds = new Set((this._extensions[pointName] || []).map(e => e.id))
         const missing = extDef.overrideTargets.filter(t => !existingIds.has(t))
-        if (missing.length > 0) {
+        if (missing.length > 0 && existingIds.size > 0) {
           result.valid = false
           result.errors.push({
             field: 'overrideTargets',
             message: `覆盖目标不存在: ${missing.join(', ')} (point: ${pointName})`,
+          })
+        } else if (missing.length > 0 && existingIds.size === 0) {
+          result.warnings.push({
+            type: 'missing_override_target',
+            pointName,
+            missingTargets: missing,
+            message: `覆盖目标 "${missing.join(', ')}" 目前不存在，但若后续注册则可正常覆盖 (point: ${pointName})`,
           })
         }
       }
@@ -340,7 +347,7 @@ class ExtensionPointManager {
     }
 
     const skipRollback = options.skipRollback === true
-    const failOnPartialError = options.failOnPartialError !== false
+    const failOnPartialError = options.failOnPartialError === true
     const existingRollback = this._rollbacks[pkg.id]
 
     const rollbackContext = {
@@ -570,7 +577,10 @@ class ExtensionPointManager {
       }
     }
 
-    if (extension.override && extension.overrideTargets?.length > 0) {
+    if (extension.override) {
+      if (!extension.overrideTargets || !Array.isArray(extension.overrideTargets) || extension.overrideTargets.length === 0) {
+        throw new Error(`标记为覆盖扩展时必须指定覆盖目标 (point: ${pointName})`)
+      }
       const existingIds = new Set(
         (this._extensions[pointName] || []).map(e => e.id)
       )
@@ -695,6 +705,7 @@ class ExtensionPointManager {
             if (this._options.onConflict) {
               this._options.onConflict(conflictRecord)
             }
+            this._emit('conflict:detected', conflictRecord)
             throw new OverrideConflictError(pointName, conflict.existing, newExt)
 
           case OVERRIDE_STRATEGIES.LAST_WINS:
@@ -728,13 +739,14 @@ class ExtensionPointManager {
             this._extensions[pointName].push(newExt)
             newExt.state = EXTENSION_STATES.ACTIVE
         }
-
-        this._conflicts.push(conflictRecord)
-        if (this._options.onConflict) {
-          this._options.onConflict(conflictRecord)
-        }
       }
 
+      if (!this._conflicts.includes(conflictRecord)) {
+        this._conflicts.push(conflictRecord)
+      }
+      if (this._options.onConflict) {
+        this._options.onConflict(conflictRecord)
+      }
       this._emit('conflict:detected', conflictRecord)
     }
   }
@@ -744,7 +756,7 @@ class ExtensionPointManager {
     const idx = list.findIndex(e => e.id === existingExt.id)
     if (idx !== -1) {
       existingExt.state = EXTENSION_STATES.DISABLED
-      this._extensions[pointName].splice(idx, 1, newExt)
+      this._extensions[pointName].push(newExt)
       newExt.state = EXTENSION_STATES.ACTIVE
       this._log('INFO', `Extension "${newExt.id}" replaced "${existingExt.id}" on point "${pointName}"`)
     } else {
@@ -767,7 +779,7 @@ class ExtensionPointManager {
     const idx = list.findIndex(e => e.id === existingExt.id)
     if (idx !== -1) {
       existingExt.state = EXTENSION_STATES.DISABLED
-      this._extensions[pointName].splice(idx, 1, merged)
+      this._extensions[pointName].push(merged)
     } else {
       this._extensions[pointName].push(merged)
     }
