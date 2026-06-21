@@ -94,15 +94,27 @@ export const useExtensionStore = defineStore('extension', () => {
     for (const point of points.value) {
       manager.definePoint(point.name, backendPointToManager(point))
     }
+
+    const packageExtensionMap = {}
+    for (const ext of extensions.value) {
+      const pid = ext.package_id
+      if (!packageExtensionMap[pid]) {
+        packageExtensionMap[pid] = []
+      }
+      packageExtensionMap[pid].push(ext)
+    }
+
     for (const pkg of packages.value) {
+      const pkgExts = (packageExtensionMap[pkg.package_id] || [])
+        .filter(e => e.state !== EXTENSION_STATES.DISABLED)
+        .map(backendExtensionToManager)
+
       const pkgData = {
         id: pkg.package_id,
         name: pkg.name,
         version: pkg.version,
         description: pkg.description,
-        extensions: extensions.value
-          .filter(e => e.package_id === pkg.package_id && e.state !== EXTENSION_STATES.DISABLED)
-          .map(backendExtensionToManager),
+        extensions: pkgExts,
         enabled: pkg.enabled,
       }
       try {
