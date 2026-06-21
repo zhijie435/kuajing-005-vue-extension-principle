@@ -1,5 +1,7 @@
 <template>
   <div class="dashboard">
+    <ToastContainer />
+
     <div class="stats-grid">
       <div class="stat-card" v-for="stat in statCards" :key="stat.label">
         <div class="stat-icon" :style="{ background: stat.color }">{{ stat.icon }}</div>
@@ -14,7 +16,7 @@
       <section class="section">
         <div class="section-header">
           <h2>扩展点</h2>
-          <button class="btn btn-primary" @click="showDefinePoint = true">+ 定义扩展点</button>
+          <button class="btn btn-primary" @click="openDefinePoint">+ 定义扩展点</button>
         </div>
         <div class="table-wrap">
           <table class="data-table" v-if="store.points.length">
@@ -46,7 +48,7 @@
       <section class="section">
         <div class="section-header">
           <h2>扩展包</h2>
-          <button class="btn btn-primary" @click="showRegisterPackage = true">+ 注册扩展包</button>
+          <button class="btn btn-primary" @click="openRegisterPackage">+ 注册扩展包</button>
         </div>
         <div class="table-wrap">
           <table class="data-table" v-if="store.packages.length">
@@ -159,10 +161,12 @@
       <div class="modal-overlay" v-if="showDefinePoint" @click.self="showDefinePoint = false">
         <div class="modal">
           <h3>定义扩展点</h3>
-          <form @submit.prevent="handleDefinePoint">
+          <form @submit.prevent="handleDefinePoint" novalidate>
             <div class="form-group">
-              <label>名称</label>
-              <input class="input" v-model="pointForm.name" placeholder="crm.customer.detail.action" required />
+              <label>名称 <span class="required">*</span></label>
+              <input class="input" :class="{ 'input-error': formErrors.name }" v-model="pointForm.name" placeholder="crm.customer.detail.action" />
+              <div class="field-hint" v-if="!formErrors.name">点分隔标识符格式，如 crm.customer.detail.action</div>
+              <div class="field-error" v-if="formErrors.name">{{ formErrors.name }}</div>
             </div>
             <div class="form-group">
               <label>描述</label>
@@ -171,13 +175,14 @@
             <div class="form-row">
               <div class="form-group">
                 <label>覆盖策略</label>
-                <select class="input" v-model="pointForm.strategy">
+                <select class="input" :class="{ 'input-error': formErrors.strategy }" v-model="pointForm.strategy">
                   <option value="last_wins">last_wins (后注册优先)</option>
                   <option value="first_wins">first_wins (先注册优先)</option>
                   <option value="throw">throw (抛出异常)</option>
                   <option value="merge">merge (合并属性)</option>
                   <option value="stack">stack (堆叠共存)</option>
                 </select>
+                <div class="field-error" v-if="formErrors.strategy">{{ formErrors.strategy }}</div>
               </div>
               <div class="form-group">
                 <label>允许多扩展</label>
@@ -190,7 +195,10 @@
             </div>
             <div class="form-actions">
               <button type="button" class="btn" @click="showDefinePoint = false">取消</button>
-              <button type="submit" class="btn btn-primary">确定</button>
+              <button type="submit" class="btn btn-primary" :disabled="submitting">
+                <span v-if="submitting" class="spinner"></span>
+                {{ submitting ? '提交中...' : '确定' }}
+              </button>
             </div>
           </form>
         </div>
@@ -199,18 +207,22 @@
       <div class="modal-overlay" v-if="showRegisterPackage" @click.self="showRegisterPackage = false">
         <div class="modal">
           <h3>注册扩展包</h3>
-          <form @submit.prevent="handleRegisterPackage">
+          <form @submit.prevent="handleRegisterPackage" novalidate>
             <div class="form-group">
-              <label>包ID</label>
-              <input class="input" v-model="packageForm.id" placeholder="crm-advanced-features" required />
+              <label>包ID <span class="required">*</span></label>
+              <input class="input" :class="{ 'input-error': formErrors.packageId }" v-model="packageForm.id" placeholder="crm-advanced-features" />
+              <div class="field-hint" v-if="!formErrors.packageId">字母开头的标识符，可用连字符和点</div>
+              <div class="field-error" v-if="formErrors.packageId">{{ formErrors.packageId }}</div>
             </div>
             <div class="form-group">
-              <label>名称</label>
-              <input class="input" v-model="packageForm.name" placeholder="CRM高级功能包" />
+              <label>名称 <span class="required">*</span></label>
+              <input class="input" :class="{ 'input-error': formErrors.packageName }" v-model="packageForm.name" placeholder="CRM高级功能包" />
+              <div class="field-error" v-if="formErrors.packageName">{{ formErrors.packageName }}</div>
             </div>
             <div class="form-group">
               <label>版本</label>
-              <input class="input" v-model="packageForm.version" placeholder="1.0.0" />
+              <input class="input" :class="{ 'input-error': formErrors.version }" v-model="packageForm.version" placeholder="1.0.0" />
+              <div class="field-error" v-if="formErrors.version">{{ formErrors.version }}</div>
             </div>
             <div class="form-group">
               <label>描述</label>
@@ -218,7 +230,10 @@
             </div>
             <div class="form-actions">
               <button type="button" class="btn" @click="showRegisterPackage = false">取消</button>
-              <button type="submit" class="btn btn-primary">注册</button>
+              <button type="submit" class="btn btn-primary" :disabled="submitting">
+                <span v-if="submitting" class="spinner"></span>
+                {{ submitting ? '提交中...' : '注册' }}
+              </button>
             </div>
           </form>
         </div>
@@ -227,27 +242,30 @@
       <div class="modal-overlay" v-if="showRegisterExt" @click.self="showRegisterExt = false">
         <div class="modal modal-lg">
           <h3>注册扩展</h3>
-          <form @submit.prevent="handleRegisterExtension">
+          <form @submit.prevent="handleRegisterExtension" novalidate>
             <div class="form-row">
               <div class="form-group">
-                <label>扩展包ID</label>
-                <select class="input" v-model="extForm.packageId" required>
+                <label>扩展包ID <span class="required">*</span></label>
+                <select class="input" :class="{ 'input-error': formErrors.packageId }" v-model="extForm.packageId">
                   <option value="">选择扩展包</option>
                   <option v-for="pkg in store.packages" :key="pkg.package_id" :value="pkg.package_id">{{ pkg.package_id }} - {{ pkg.name }}</option>
                 </select>
+                <div class="field-error" v-if="formErrors.packageId">{{ formErrors.packageId }}</div>
               </div>
               <div class="form-group">
-                <label>扩展点</label>
-                <select class="input" v-model="extForm.point" required>
+                <label>扩展点 <span class="required">*</span></label>
+                <select class="input" :class="{ 'input-error': formErrors.point }" v-model="extForm.point">
                   <option value="">选择扩展点</option>
                   <option v-for="p in store.points" :key="p.name" :value="p.name">{{ p.name }}</option>
                 </select>
+                <div class="field-error" v-if="formErrors.point">{{ formErrors.point }}</div>
               </div>
             </div>
             <div class="form-row">
               <div class="form-group">
                 <label>扩展ID（可选）</label>
-                <input class="input" v-model="extForm.id" placeholder="自动生成" />
+                <input class="input" :class="{ 'input-error': formErrors.extId }" v-model="extForm.id" placeholder="自动生成" />
+                <div class="field-error" v-if="formErrors.extId">{{ formErrors.extId }}</div>
               </div>
               <div class="form-group">
                 <label>组件名</label>
@@ -257,11 +275,13 @@
             <div class="form-row">
               <div class="form-group">
                 <label>优先级</label>
-                <input class="input" type="number" v-model.number="extForm.priority" />
+                <input class="input" :class="{ 'input-error': formErrors.priority }" type="number" v-model.number="extForm.priority" />
+                <div class="field-error" v-if="formErrors.priority">{{ formErrors.priority }}</div>
               </div>
               <div class="form-group">
                 <label>排序</label>
-                <input class="input" type="number" v-model.number="extForm.order" />
+                <input class="input" :class="{ 'input-error': formErrors.order }" type="number" v-model.number="extForm.order" />
+                <div class="field-error" v-if="formErrors.order">{{ formErrors.order }}</div>
               </div>
             </div>
             <div class="form-group">
@@ -271,16 +291,22 @@
               </label>
             </div>
             <div class="form-group" v-if="extForm.override">
-              <label>覆盖目标（逗号分隔扩展ID）</label>
-              <input class="input" v-model="extForm.overrideTargetsStr" placeholder="ext-id-1, ext-id-2" />
+              <label>覆盖目标（逗号分隔扩展ID）<span class="required">*</span></label>
+              <input class="input" :class="{ 'input-error': formErrors.overrideTargets }" v-model="extForm.overrideTargetsStr" placeholder="ext-id-1, ext-id-2" />
+              <div class="field-hint" v-if="!formErrors.overrideTargets && currentPointExtensions.length">当前扩展点已有扩展: {{ currentPointExtensions.map(e => e.ext_id).join(', ') }}</div>
+              <div class="field-error" v-if="formErrors.overrideTargets">{{ formErrors.overrideTargets }}</div>
             </div>
             <div class="form-group">
               <label>Props (JSON)</label>
-              <textarea class="input textarea" v-model="extForm.propsStr" placeholder='{"title": "自定义标题"}' rows="3"></textarea>
+              <textarea class="input textarea" :class="{ 'input-error': formErrors.props }" v-model="extForm.propsStr" placeholder='{"title": "自定义标题"}' rows="3"></textarea>
+              <div class="field-error" v-if="formErrors.props">{{ formErrors.props }}</div>
             </div>
             <div class="form-actions">
               <button type="button" class="btn" @click="showRegisterExt = false">取消</button>
-              <button type="submit" class="btn btn-primary">注册</button>
+              <button type="submit" class="btn btn-primary" :disabled="submitting">
+                <span v-if="submitting" class="spinner"></span>
+                {{ submitting ? '提交中...' : '注册' }}
+              </button>
             </div>
           </form>
         </div>
@@ -317,16 +343,25 @@
     </Teleport>
 
     <div class="fab-bar">
-      <button class="fab" @click="showRegisterExt = true" title="注册扩展">+</button>
-      <button class="fab fab-secondary" @click="store.init()" title="刷新">↻</button>
+      <button class="fab" @click="openRegisterExt" title="注册扩展">+</button>
+      <button class="fab fab-secondary" @click="handleRefresh" title="刷新" :disabled="store.loading">↻</button>
     </div>
   </div>
 </template>
 
 <script setup>
-import { ref, computed, onMounted, reactive } from 'vue'
+import { ref, computed, onMounted, reactive, watch } from 'vue'
 import { useExtensionStore } from '../store/extension'
-import { useExtensionManager } from '../plugin'
+import { toast } from '../components/toast'
+import ToastContainer from '../components/ToastContainer.vue'
+import {
+  validatePointDefinition,
+  validatePackageRegistration,
+  validateExtensionRegistration,
+  validateJsonString,
+  validateOverrideTargets,
+  ValidationResult,
+} from '../plugin/validator'
 
 const store = useExtensionStore()
 
@@ -336,6 +371,29 @@ const showRegisterExt = ref(false)
 const showImpactResult = ref(false)
 const impactResult = ref({})
 const filterPoint = ref('')
+const submitting = ref(false)
+const formErrors = reactive({})
+
+function clearErrors() {
+  Object.keys(formErrors).forEach(k => delete formErrors[k])
+}
+
+function setErrors(validationResult) {
+  clearErrors()
+  if (!validationResult.valid) {
+    const fieldMap = validationResult.fieldErrors
+    for (const [field, messages] of Object.entries(fieldMap)) {
+      formErrors[field] = messages[0]
+    }
+  }
+}
+
+function setErrorsFromMap(errorMap) {
+  clearErrors()
+  for (const [field, msg] of Object.entries(errorMap)) {
+    formErrors[field] = msg
+  }
+}
 
 const pointForm = reactive({
   name: '',
@@ -378,39 +436,153 @@ const filteredExtensions = computed(() => {
   return store.extensions.filter(e => e.point_name === filterPoint.value)
 })
 
+const currentPointExtensions = computed(() => {
+  if (!extForm.point) return []
+  return store.extensions.filter(e => e.point_name === extForm.point)
+})
+
 function getExtensionCount(pointName) {
   return store.extensions.filter(e => e.point_name === pointName).length
 }
 
+function openDefinePoint() {
+  clearErrors()
+  Object.assign(pointForm, { name: '', description: '', strategy: 'last_wins', multiple: true, required: false })
+  showDefinePoint.value = true
+}
+
+function openRegisterPackage() {
+  clearErrors()
+  Object.assign(packageForm, { id: '', name: '', version: '1.0.0', description: '' })
+  showRegisterPackage.value = true
+}
+
+function openRegisterExt() {
+  clearErrors()
+  Object.assign(extForm, { packageId: '', point: '', id: '', component: '', priority: 0, order: 100, override: false, overrideTargetsStr: '', propsStr: '' })
+  showRegisterExt.value = true
+}
+
 async function handleDefinePoint() {
+  clearErrors()
+  const validation = validatePointDefinition({
+    name: pointForm.name,
+    strategy: pointForm.strategy,
+  })
+  if (!validation.valid) {
+    setErrors(validation)
+    toast.warning('请修正表单中的校验错误')
+    return
+  }
+
+  submitting.value = true
   try {
     await store.definePoint({ ...pointForm })
     showDefinePoint.value = false
+    toast.success(`扩展点 "${pointForm.name}" 定义成功`)
     Object.assign(pointForm, { name: '', description: '', strategy: 'last_wins', multiple: true, required: false })
-  } catch {}
+  } catch (e) {
+    const fieldMap = {}
+    if (e.message?.includes('already exists') || e.message?.includes('UNIQUE constraint')) {
+      fieldMap.name = '该扩展点名称已存在'
+    } else {
+      fieldMap.name = e.message || '定义失败'
+    }
+    setErrorsFromMap(fieldMap)
+    toast.error(`定义失败: ${e.message}`)
+  } finally {
+    submitting.value = false
+  }
 }
 
 async function handleDeletePoint(name) {
-  if (confirm(`确定删除扩展点 "${name}"？`)) {
-    await store.deletePoint(name)
+  if (confirm(`确定删除扩展点 "${name}"？其下所有扩展和冲突也将被删除。`)) {
+    try {
+      await store.deletePoint(name)
+      toast.success(`扩展点 "${name}" 已删除`)
+    } catch (e) {
+      toast.error(`删除失败: ${e.message}`)
+    }
   }
 }
 
 async function handleRegisterPackage() {
+  clearErrors()
+  const validation = validatePackageRegistration({
+    id: packageForm.id,
+    name: packageForm.name,
+    version: packageForm.version,
+  })
+  if (!validation.valid) {
+    setErrors(validation)
+    toast.warning('请修正表单中的校验错误')
+    return
+  }
+
+  submitting.value = true
   try {
     await store.registerPackage({ ...packageForm })
     showRegisterPackage.value = false
+    toast.success(`扩展包 "${packageForm.id}" 注册成功`)
     Object.assign(packageForm, { id: '', name: '', version: '1.0.0', description: '' })
-  } catch {}
+  } catch (e) {
+    const fieldMap = {}
+    if (e.message?.includes('already exists') || e.message?.includes('UNIQUE constraint')) {
+      fieldMap.packageId = '该扩展包ID已存在'
+    } else {
+      fieldMap.packageId = e.message || '注册失败'
+    }
+    setErrorsFromMap(fieldMap)
+    toast.error(`注册失败: ${e.message}`)
+  } finally {
+    submitting.value = false
+  }
 }
 
 async function handleDeletePackage(id) {
-  if (confirm(`确定删除扩展包 "${id}"？`)) {
-    await store.deletePackage(id)
+  if (confirm(`确定删除扩展包 "${id}"？其下所有扩展也将被删除。`)) {
+    try {
+      await store.deletePackage(id)
+      toast.success(`扩展包 "${id}" 已删除`)
+    } catch (e) {
+      toast.error(`删除失败: ${e.message}`)
+    }
   }
 }
 
 async function handleRegisterExtension() {
+  clearErrors()
+
+  const errorMap = {}
+
+  if (!extForm.packageId) {
+    errorMap.packageId = '请选择扩展包'
+  }
+  if (!extForm.point) {
+    errorMap.point = '请选择扩展点'
+  }
+
+  if (extForm.propsStr && extForm.propsStr.trim()) {
+    const propsValidation = validateJsonString(extForm.propsStr, 'props')
+    if (!propsValidation.valid) {
+      errorMap.props = propsValidation.firstError.message
+    }
+  }
+
+  if (extForm.override) {
+    const targetsValidation = validateOverrideTargets(extForm.overrideTargetsStr, store.extensions)
+    if (!targetsValidation.valid) {
+      errorMap.overrideTargets = targetsValidation.firstError.message
+    }
+  }
+
+  if (Object.keys(errorMap).length > 0) {
+    setErrorsFromMap(errorMap)
+    toast.warning('请修正表单中的校验错误')
+    return
+  }
+
+  submitting.value = true
   try {
     const data = {
       point: extForm.point,
@@ -419,20 +591,51 @@ async function handleRegisterExtension() {
       priority: extForm.priority,
       order: extForm.order,
       override: extForm.override,
-      overrideTargets: extForm.overrideTargetsStr ? extForm.overrideTargetsStr.split(',').map(s => s.trim()) : [],
+      overrideTargets: extForm.overrideTargetsStr ? extForm.overrideTargetsStr.split(',').map(s => s.trim()).filter(Boolean) : [],
       props: extForm.propsStr ? JSON.parse(extForm.propsStr) : undefined,
     }
-    await store.registerExtension(extForm.packageId, data)
+
+    const result = await store.registerExtension(extForm.packageId, data)
+
+    if (result?.conflicts?.length) {
+      toast.warning(`注册成功，但产生了 ${result.conflicts.length} 个覆盖冲突，请查看冲突列表`)
+    } else {
+      toast.success('扩展注册成功')
+    }
+
     showRegisterExt.value = false
     Object.assign(extForm, { packageId: '', point: '', id: '', component: '', priority: 0, order: 100, override: false, overrideTargetsStr: '', propsStr: '' })
   } catch (e) {
-    alert('注册失败: ' + e.message)
+    const fieldMap = {}
+    const msg = e.message || '注册失败'
+    if (msg.includes('not found') || msg.includes('is not defined')) {
+      fieldMap.point = msg
+    } else if (msg.includes('already registered') || msg.includes('UNIQUE constraint')) {
+      fieldMap.extId = '该扩展ID已被注册'
+    } else if (msg.includes('Override conflict')) {
+      fieldMap.overrideTargets = msg
+    } else if (msg.includes('覆盖目标不存在')) {
+      fieldMap.overrideTargets = msg
+    } else if (msg.includes('validation') || msg.includes('failed validation')) {
+      fieldMap.extId = msg
+    } else {
+      fieldMap.extId = msg
+    }
+    setErrorsFromMap(fieldMap)
+    toast.error(`注册失败: ${msg}`)
+  } finally {
+    submitting.value = false
   }
 }
 
 async function handleUnregister(extId) {
   if (confirm(`确定注销扩展 "${extId}"？`)) {
-    await store.unregisterExtension(extId)
+    try {
+      await store.unregisterExtension(extId)
+      toast.success(`扩展 "${extId}" 已注销`)
+    } catch (e) {
+      toast.error(`注销失败: ${e.message}`)
+    }
   }
 }
 
@@ -441,15 +644,25 @@ async function handleCheckOverride(packageId) {
     impactResult.value = await store.checkOverrideImpact(packageId)
     showImpactResult.value = true
   } catch (e) {
-    alert('检查失败: ' + e.message)
+    toast.error(`检查失败: ${e.message}`)
   }
 }
 
 async function handleResolveConflict(id, resolution) {
   try {
     await store.resolveConflict(id, resolution)
+    toast.success('冲突已解决')
   } catch (e) {
-    alert('解决失败: ' + e.message)
+    toast.error(`解决失败: ${e.message}`)
+  }
+}
+
+async function handleRefresh() {
+  try {
+    await store.init()
+    toast.info('数据已刷新')
+  } catch (e) {
+    toast.error(`刷新失败: ${e.message}`)
   }
 }
 
@@ -616,6 +829,7 @@ code {
 .btn:hover { background: #f8fafc; }
 .btn-primary { background: #6366f1; color: #fff; border-color: #6366f1; }
 .btn-primary:hover { background: #4f46e5; }
+.btn-primary:disabled { background: #a5b4fc; border-color: #a5b4fc; cursor: not-allowed; }
 .btn-danger { background: #ef4444; color: #fff; border-color: #ef4444; }
 .btn-danger:hover { background: #dc2626; }
 .btn-warning { background: #f59e0b; color: #fff; border-color: #f59e0b; }
@@ -636,9 +850,53 @@ code {
 
 .input:focus { outline: none; border-color: #6366f1; box-shadow: 0 0 0 3px rgba(99,102,241,.1); }
 
+.input-error {
+  border-color: #ef4444;
+  box-shadow: 0 0 0 3px rgba(239,68,68,.1);
+}
+
+.input-error:focus {
+  border-color: #ef4444;
+  box-shadow: 0 0 0 3px rgba(239,68,68,.15);
+}
+
 .textarea { resize: vertical; font-family: monospace; }
 
 .filter-select { width: auto; min-width: 200px; }
+
+.required {
+  color: #ef4444;
+  font-weight: 600;
+}
+
+.field-hint {
+  font-size: 12px;
+  color: #94a3b8;
+  margin-top: 4px;
+}
+
+.field-error {
+  font-size: 12px;
+  color: #ef4444;
+  margin-top: 4px;
+  font-weight: 500;
+}
+
+.spinner {
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  border: 2px solid rgba(255,255,255,.3);
+  border-top-color: #fff;
+  border-radius: 50%;
+  animation: spin .6s linear infinite;
+  vertical-align: middle;
+  margin-right: 4px;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
 
 .switch {
   position: relative;

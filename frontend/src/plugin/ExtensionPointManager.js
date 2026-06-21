@@ -6,6 +6,12 @@ import {
   ExtensionPointNotFoundError,
   DuplicateExtensionError,
 } from './constants'
+import {
+  validatePointName,
+  validatePackageId,
+  validateStrategy,
+  validateExtensionId,
+} from './validator'
 
 const LOG_LEVELS = { DEBUG: 0, INFO: 1, WARN: 2, ERROR: 3 }
 
@@ -38,6 +44,16 @@ class ExtensionPointManager {
     if (this._points[name]) {
       this._log('WARN', `Extension point "${name}" already defined, redefining`)
     }
+    const nameValidation = validatePointName(name)
+    if (!nameValidation.valid) {
+      throw new Error(nameValidation.firstError.message)
+    }
+    if (config.strategy) {
+      const strategyValidation = validateStrategy(config.strategy)
+      if (!strategyValidation.valid) {
+        throw new Error(strategyValidation.firstError.message)
+      }
+    }
     this._points[name] = reactive({
       name,
       description: config.description || '',
@@ -68,6 +84,10 @@ class ExtensionPointManager {
   registerPackage(pkg) {
     if (!pkg || !pkg.id) {
       throw new Error('Package must have an id')
+    }
+    const idValidation = validatePackageId(pkg.id)
+    if (!idValidation.valid) {
+      throw new Error(idValidation.firstError.message)
     }
     if (this._packages[pkg.id]) {
       this._log('WARN', `Package "${pkg.id}" already registered, updating`)
@@ -104,6 +124,27 @@ class ExtensionPointManager {
     const pointName = extension.point
     const pointConfig = this._points[pointName]
     const extId = extension.id || `${packageId}::${pointName}::${Date.now()}`
+
+    if (extension.id) {
+      const idValidation = validateExtensionId(extension.id)
+      if (!idValidation.valid) {
+        throw new Error(idValidation.firstError.message)
+      }
+    }
+
+    if (extension.override && extension.overrideTargets?.length > 0) {
+      const existingIds = new Set(
+        (this._extensions[pointName] || []).map(e => e.id)
+      )
+      const missing = extension.overrideTargets.filter(t => !existingIds.has(t))
+      if (missing.length > 0 && existingIds.size > 0) {
+        throw new Error(
+          `覆盖目标不存在: ${missing.join(', ')}。` +
+          `当前扩展点 "${pointName}" 的已注册扩展: ${[...existingIds].join(', ')}`
+        )
+      }
+    }
+
     const extRecord = reactive({
       id: extId,
       point: pointName,

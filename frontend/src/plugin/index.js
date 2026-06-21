@@ -2,6 +2,7 @@ import { ExtensionPoint, ExtensionSlot, provideExtensionManager, EXTENSION_MANAG
 import { createExtensionManager, useExtensionManager, ExtensionPointManager } from './ExtensionPointManager'
 import { useExtensionPoint, useExtension, useOverrideChecker } from './composables'
 import { OVERRIDE_STRATEGIES, EXTENSION_STATES, OverrideConflictError, ExtensionPointNotFoundError, DuplicateExtensionError } from './constants'
+export { ValidationError, ValidationResult, validatePointName, validatePackageId, validatePackageName, validateVersion, validateExtensionId, validateStrategy, validateJsonString, validateOverrideTargets, validatePriority, validateOrder, validatePointDefinition, validatePackageRegistration, validateExtensionRegistration } from './validator'
 
 export function createExtensionPlugin(options = {}) {
   const manager = options.manager || createExtensionManager(options)
