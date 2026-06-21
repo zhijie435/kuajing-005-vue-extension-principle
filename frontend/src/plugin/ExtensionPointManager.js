@@ -284,6 +284,8 @@ class ExtensionPointManager {
   }
 
   definePoint(name, config = {}) {
+    this._checkPermission(PERMISSION_ACTIONS.WRITE_POINT, { pointName: name })
+
     if (this._points[name]) {
       this._log('WARN', `Extension point "${name}" already defined, redefining`)
     }
@@ -316,6 +318,8 @@ class ExtensionPointManager {
   }
 
   removePoint(name) {
+    this._checkPermission(PERMISSION_ACTIONS.WRITE_POINT, { pointName: name })
+
     if (!this._points[name]) return this
     delete this._points[name]
     delete this._extensions[name]
@@ -325,6 +329,8 @@ class ExtensionPointManager {
   }
 
   registerPackage(pkg, options = {}) {
+    this._checkPermission(PERMISSION_ACTIONS.REGISTER_PACKAGE, { packageId: pkg?.id })
+
     if (!pkg || !pkg.id) {
       throw new Error('Package must have an id')
     }
@@ -334,6 +340,7 @@ class ExtensionPointManager {
     }
 
     const skipRollback = options.skipRollback === true
+    const failOnPartialError = options.failOnPartialError !== false
     const existingRollback = this._rollbacks[pkg.id]
 
     const rollbackContext = {
@@ -341,6 +348,12 @@ class ExtensionPointManager {
       createdExtensions: [],
       createdConflicts: [],
       previousPackageState: this._packages[pkg.id] ? { ...this._packages[pkg.id] } : null,
+    }
+
+    const registrationResult = {
+      registeredExtensions: [],
+      failedExtensions: [],
+      errors: [],
     }
 
     const originalResolveByReplacement = this._resolveByReplacement.bind(this)
@@ -381,7 +394,8 @@ class ExtensionPointManager {
     })
 
     if (pkg.extensions && pkg.extensions.length > 0) {
-      pkg.extensions.forEach(ext => {
+      for (let i = 0; i < pkg.extensions.length; i++) {
+        const ext = pkg.extensions[i]
         try {
           const registered = this.register(pkg.id, ext)
           if (registered) {
@@ -389,11 +403,25 @@ class ExtensionPointManager {
               id: registered.id,
               pointName: registered.point,
             })
+            registrationResult.registeredExtensions.push({
+              index: i,
+              id: registered.id,
+              pointName: registered.point,
+            })
           }
         } catch (e) {
-          this._log('ERROR', `Failed to register extension for package "${pkg.id}":`, e.message)
+          const errorInfo = {
+            index: i,
+            extension: ext,
+            point: ext.point || '(unknown)',
+            message: e.message,
+            error: e,
+          }
+          registrationResult.failedExtensions.push(errorInfo)
+          registrationResult.errors.push(e)
+          this._log('ERROR', `Failed to register extension [${i}] for package "${pkg.id}" on point "${errorInfo.point}":`, e.message)
         }
-      })
+      }
     }
 
     for (let i = originalConflictCount; i < this._conflicts.length; i++) {
@@ -408,6 +436,7 @@ class ExtensionPointManager {
         packageId: pkg.id,
         operationType: 'register',
         ...rollbackContext,
+        registrationResult: { ...registrationResult },
         rolledBack: false,
         createdAt: Date.now(),
       })
@@ -415,12 +444,40 @@ class ExtensionPointManager {
       this._rollbacks[pkg.id] = existingRollback
     }
 
-    this._emit('package:registered', { packageId: pkg.id, pkg, rollbackContext })
-    this._log('INFO', `Package "${pkg.id}" v${pkg.version || '1.0.0'} registered`)
-    return this
+    this._emit('package:registered', {
+      packageId: pkg.id,
+      pkg,
+      rollbackContext,
+      registrationResult,
+    })
+
+    if (registrationResult.failedExtensions.length > 0) {
+      this._log(
+        'WARN',
+        `Package "${pkg.id}" registered with ${registrationResult.failedExtensions.length} failed extensions out of ${pkg.extensions.length}`
+      )
+      if (failOnPartialError) {
+        throw new PartialRegistrationError(
+          pkg.id,
+          registrationResult.registeredExtensions,
+          registrationResult.failedExtensions,
+          registrationResult.errors
+        )
+      }
+    } else {
+      this._log('INFO', `Package "${pkg.id}" v${pkg.version || '1.0.0'} registered successfully`)
+    }
+
+    return {
+      success: registrationResult.failedExtensions.length === 0,
+      package: this._packages[pkg.id],
+      ...registrationResult,
+    }
   }
 
   rollbackPackage(packageId) {
+    this._checkPermission(PERMISSION_ACTIONS.ROLLBACK_PACKAGE, { packageId })
+
     const rollback = this._rollbacks[packageId]
     if (!rollback || rollback.rolledBack) {
       this._log('WARN', `No rollback data for package "${packageId}", will perform simple unregister`)
@@ -490,6 +547,11 @@ class ExtensionPointManager {
   }
 
   register(packageId, extension) {
+    this._checkPermission(PERMISSION_ACTIONS.WRITE_EXTENSION, {
+      packageId,
+      pointName: extension?.point,
+    })
+
     if (!extension || !extension.point) {
       throw new Error('Extension must specify a "point" property')
     }
@@ -722,6 +784,8 @@ class ExtensionPointManager {
   }
 
   unregister(extensionId, pointName) {
+    this._checkPermission(PERMISSION_ACTIONS.WRITE_EXTENSION, { extensionId, pointName })
+
     if (!pointName) {
       for (const name of Object.keys(this._extensions)) {
         const idx = this._extensions[name].findIndex(e => e.id === extensionId)
@@ -742,6 +806,8 @@ class ExtensionPointManager {
   }
 
   resolve(pointName, context = {}) {
+    this._checkPermission(PERMISSION_ACTIONS.READ_EXTENSION, { pointName })
+
     if (!this._points[pointName]) {
       throw new ExtensionPointNotFoundError(pointName)
     }
@@ -770,14 +836,17 @@ class ExtensionPointManager {
   }
 
   getPoint(name) {
+    this._checkPermission(PERMISSION_ACTIONS.READ_POINT, { pointName: name })
     return this._points[name] || null
   }
 
   getPoints() {
+    this._checkPermission(PERMISSION_ACTIONS.READ_POINT)
     return Object.values(this._points)
   }
 
   getExtensions(pointName) {
+    this._checkPermission(PERMISSION_ACTIONS.READ_EXTENSION, { pointName })
     if (pointName) {
       return this._extensions[pointName] || []
     }
@@ -789,14 +858,17 @@ class ExtensionPointManager {
   }
 
   getPackage(packageId) {
+    this._checkPermission(PERMISSION_ACTIONS.READ_PACKAGE, { packageId })
     return this._packages[packageId] || null
   }
 
   getPackages() {
+    this._checkPermission(PERMISSION_ACTIONS.READ_PACKAGE)
     return Object.values(this._packages)
   }
 
   getConflicts(options = {}) {
+    this._checkPermission(PERMISSION_ACTIONS.READ_CONFLICT, options)
     let conflicts = [...this._conflicts]
     if (options.pointName) {
       conflicts = conflicts.filter(c => c.pointName === options.pointName)
@@ -811,6 +883,8 @@ class ExtensionPointManager {
   }
 
   checkOverrideImpact(packageId) {
+    this._checkPermission(PERMISSION_ACTIONS.CHECK_IMPACT, { packageId })
+
     const pkg = this._packages[packageId]
     if (!pkg) return { canInstall: true, conflicts: [], warnings: [] }
 
@@ -839,6 +913,7 @@ class ExtensionPointManager {
             existingPackage: ext.packageId,
             incomingExtension: extDef.id || `${packageId}::${pointName}`,
             resolution: pointConfig.strategy,
+            blocksInstallation: pointConfig.strategy === OVERRIDE_STRATEGIES.THROW,
           })
         }
         if (extDef.override && extDef.overrideTargets?.includes(ext.id)) {
@@ -849,19 +924,19 @@ class ExtensionPointManager {
             existingPackage: ext.packageId,
             incomingExtension: extDef.id || `${packageId}::${pointName}`,
             resolution: 'incoming_replaces_existing',
+            blocksInstallation: false,
           })
         }
       }
     }
 
-    impacts.canInstall = impacts.conflicts.filter(
-      c => c.resolution === 'throw'
-    ).length === 0
+    impacts.canInstall = impacts.conflicts.filter(c => c.blocksInstallation).length === 0
 
     return impacts
   }
 
   getStats() {
+    this._checkPermission(PERMISSION_ACTIONS.READ_STATS)
     const points = Object.keys(this._points).length
     const extensions = this.getExtensions().length
     const active = this.getExtensions().filter(e => e.state === EXTENSION_STATES.ACTIVE).length
@@ -893,28 +968,64 @@ class ExtensionPointManager {
   }
 
   getRollback(packageId) {
+    this._checkPermission(PERMISSION_ACTIONS.READ_ROLLBACK, { packageId })
     return this._rollbacks[packageId] || null
   }
 
   getRollbacks() {
+    this._checkPermission(PERMISSION_ACTIONS.READ_ROLLBACK)
     return Object.values(this._rollbacks)
   }
 
   canRollbackPackage(packageId) {
+    this._checkPermission(PERMISSION_ACTIONS.ROLLBACK_PACKAGE, { packageId })
     const rb = this._rollbacks[packageId]
     return rb && !rb.rolledBack
   }
 
   validateAndRegisterPackage(pkg) {
+    this._checkPermission(PERMISSION_ACTIONS.REGISTER_PACKAGE, { packageId: pkg?.id })
+
     const validation = this.validatePackageRegistration(pkg)
     if (!validation.valid) {
-      return { success: false, validation, registered: null }
+      return {
+        success: false,
+        validation,
+        registered: null,
+        error: 'Package validation failed',
+        errors: validation.errors,
+      }
     }
     try {
-      this.registerPackage(pkg)
-      return { success: true, validation, registered: this._packages[pkg.id] }
+      const result = this.registerPackage(pkg, { failOnPartialError: false })
+      return {
+        success: result.success,
+        validation,
+        registered: result.package,
+        registeredExtensions: result.registeredExtensions,
+        failedExtensions: result.failedExtensions,
+        errors: result.errors.map(e => e.message),
+      }
     } catch (e) {
-      return { success: false, validation, registered: null, error: e.message }
+      if (e instanceof PartialRegistrationError) {
+        return {
+          success: false,
+          validation,
+          registered: this._packages[pkg.id] || null,
+          registeredExtensions: e.registeredExtensions,
+          failedExtensions: e.failedExtensions,
+          error: e.message,
+          errors: e.errors.map(err => err.message),
+          partialError: true,
+        }
+      }
+      return {
+        success: false,
+        validation,
+        registered: null,
+        error: e.message,
+        errors: [e.message],
+      }
     }
   }
 
