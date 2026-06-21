@@ -1,7 +1,70 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import { api } from '../api/extension'
-import { useExtensionManager, OVERRIDE_STRATEGIES, EXTENSION_STATES } from '../plugin'
+import { useExtensionManager, EXTENSION_STATES } from '../plugin'
+
+function snakeToCamel(str) {
+  return str.replace(/_([a-z])/g, (_, c) => c.toUpperCase())
+}
+
+function camelToSnake(str) {
+  return str.replace(/[A-Z]/g, c => '_' + c.toLowerCase())
+}
+
+function transformKeys(obj, transform) {
+  if (Array.isArray(obj)) {
+    return obj.map(item => transformKeys(item, transform))
+  }
+  if (obj && typeof obj === 'object' && obj.constructor === Object) {
+    const result = {}
+    for (const key of Object.keys(obj)) {
+      result[transform(key)] = transformKeys(obj[key], transform)
+    }
+    return result
+  }
+  return obj
+}
+
+function backendPointToManager(pointFromBackend) {
+  return {
+    name: pointFromBackend.name,
+    description: pointFromBackend.description,
+    strategy: pointFromBackend.strategy,
+    multiple: pointFromBackend.multiple,
+    required: pointFromBackend.required,
+    metadata: pointFromBackend.metadata,
+  }
+}
+
+function backendPackageToManager(pkgFromBackend, allExtensions) {
+  const pkgExtensions = allExtensions
+    .filter(e => e.package_id === pkgFromBackend.package_id)
+    .map(backendExtensionToManager)
+  return {
+    id: pkgFromBackend.package_id,
+    name: pkgFromBackend.name,
+    version: pkgFromBackend.version,
+    description: pkgFromBackend.description,
+    extensions: pkgExtensions,
+    enabled: pkgFromBackend.enabled,
+  }
+}
+
+function backendExtensionToManager(extFromBackend) {
+  return {
+    id: extFromBackend.ext_id,
+    point: extFromBackend.point_name,
+    packageId: extFromBackend.package_id,
+    component: extFromBackend.component,
+    props: extFromBackend.props,
+    order: extFromBackend.order,
+    priority: extFromBackend.priority,
+    override: extFromBackend.is_override,
+    overrideTargets: extFromBackend.override_targets || [],
+    metadata: extFromBackend.metadata,
+    state: extFromBackend.state,
+  }
+}
 
 export const useExtensionStore = defineStore('extension', () => {
   const manager = useExtensionManager()
@@ -22,6 +85,30 @@ export const useExtensionStore = defineStore('extension', () => {
     return map
   })
 
+  function syncManagerFromStore() {
+    manager.reset()
+    for (const point of points.value) {
+      manager.definePoint(point.name, backendPointToManager(point))
+    }
+    for (const pkg of packages.value) {
+      const pkgData = {
+        id: pkg.package_id,
+        name: pkg.name,
+        version: pkg.version,
+        description: pkg.description,
+        extensions: extensions.value
+          .filter(e => e.package_id === pkg.package_id && e.state !== EXTENSION_STATES.DISABLED)
+          .map(backendExtensionToManager),
+        enabled: pkg.enabled,
+      }
+      try {
+        manager.registerPackage(pkgData)
+      } catch (e) {
+        console.warn(`[Store] Failed to sync package ${pkg.package_id} to manager:`, e.message)
+      }
+    }
+  }
+
   async function fetchStats() {
     try {
       stats.value = await api.getStats()
@@ -35,6 +122,7 @@ export const useExtensionStore = defineStore('extension', () => {
     error.value = null
     try {
       points.value = await api.getPoints()
+      syncManagerFromStore()
     } catch (e) {
       error.value = e.message
     } finally {
@@ -46,8 +134,13 @@ export const useExtensionStore = defineStore('extension', () => {
     error.value = null
     try {
       const point = await api.definePoint(data)
-      points.value.push(point)
-      manager.definePoint(data.name, data)
+      const existingIdx = points.value.findIndex(p => p.name === point.name)
+      if (existingIdx !== -1) {
+        points.value[existingIdx] = point
+      } else {
+        points.value.push(point)
+      }
+      manager.definePoint(point.name, backendPointToManager(point))
       await fetchStats()
       return point
     } catch (e) {
@@ -61,6 +154,8 @@ export const useExtensionStore = defineStore('extension', () => {
     try {
       await api.deletePoint(name)
       points.value = points.value.filter(p => p.name !== name)
+      extensions.value = extensions.value.filter(e => e.point_name !== name)
+      conflicts.value = conflicts.value.filter(c => c.point_name !== name)
       manager.removePoint(name)
       await fetchStats()
     } catch (e) {
@@ -74,6 +169,7 @@ export const useExtensionStore = defineStore('extension', () => {
     error.value = null
     try {
       packages.value = await api.getPackages()
+      syncManagerFromStore()
     } catch (e) {
       error.value = e.message
     } finally {
@@ -85,9 +181,21 @@ export const useExtensionStore = defineStore('extension', () => {
     error.value = null
     try {
       const pkg = await api.registerPackage(data)
-      packages.value.push(pkg)
-      manager.registerPackage(data)
+      const existingIdx = packages.value.findIndex(p => p.package_id === pkg.package_id)
+      if (existingIdx !== -1) {
+        packages.value[existingIdx] = pkg
+      } else {
+        packages.value.push(pkg)
+      }
+      const pkgExts = (data.extensions || []).map(e => ({
+        ...e,
+        package_id: pkg.package_id,
+      }))
+      const freshAll = await api.getExtensions()
+      extensions.value = freshAll
+      syncManagerFromStore()
       await fetchStats()
+      await fetchConflicts()
       return pkg
     } catch (e) {
       error.value = e.message
@@ -100,6 +208,14 @@ export const useExtensionStore = defineStore('extension', () => {
     try {
       await api.deletePackage(id)
       packages.value = packages.value.filter(p => p.package_id !== id)
+      const removedExts = extensions.value.filter(e => e.package_id === id)
+      extensions.value = extensions.value.filter(e => e.package_id !== id)
+      conflicts.value = conflicts.value.filter(
+        c => c.existing_package_id !== id && c.incoming_package_id !== id
+      )
+      for (const ext of removedExts) {
+        try { manager.unregister(ext.ext_id) } catch (_) {}
+      }
       await fetchStats()
     } catch (e) {
       error.value = e.message
@@ -111,7 +227,13 @@ export const useExtensionStore = defineStore('extension', () => {
     loading.value = true
     error.value = null
     try {
-      extensions.value = await api.getExtensions(pointName)
+      const fresh = await api.getExtensions(pointName)
+      if (pointName) {
+        extensions.value = extensions.value.filter(e => e.point_name !== pointName).concat(fresh)
+      } else {
+        extensions.value = fresh
+      }
+      syncManagerFromStore()
     } catch (e) {
       error.value = e.message
     } finally {
@@ -123,14 +245,11 @@ export const useExtensionStore = defineStore('extension', () => {
     error.value = null
     try {
       const result = await api.registerExtension(packageId, data)
-      if (result.extension) {
-        extensions.value.push(result.extension)
-      }
-      if (result.conflicts?.length) {
-        conflicts.value.push(...result.conflicts)
-      }
+      const fresh = await api.getExtensions()
+      extensions.value = fresh
       await fetchStats()
       await fetchConflicts()
+      syncManagerFromStore()
       return result
     } catch (e) {
       error.value = e.message
@@ -166,8 +285,10 @@ export const useExtensionStore = defineStore('extension', () => {
       const resolved = await api.resolveConflict(id, resolution)
       const idx = conflicts.value.findIndex(c => c.id === id)
       if (idx !== -1) conflicts.value[idx] = resolved
+      const fresh = await api.getExtensions()
+      extensions.value = fresh
       await fetchStats()
-      await fetchExtensions()
+      syncManagerFromStore()
       return resolved
     } catch (e) {
       error.value = e.message
@@ -199,6 +320,7 @@ export const useExtensionStore = defineStore('extension', () => {
       packages.value = pk
       extensions.value = e
       conflicts.value = c
+      syncManagerFromStore()
     } catch (e) {
       error.value = e.message
     } finally {
@@ -213,6 +335,7 @@ export const useExtensionStore = defineStore('extension', () => {
     fetchPackages, registerPackage, deletePackage,
     fetchExtensions, registerExtension, unregisterExtension,
     fetchConflicts, resolveConflict, checkOverrideImpact,
+    syncManagerFromStore,
     init,
   }
 })
