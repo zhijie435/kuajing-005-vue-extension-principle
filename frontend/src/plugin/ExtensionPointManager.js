@@ -251,7 +251,7 @@ class ExtensionPointManager {
     return this
   }
 
-  registerPackage(pkg) {
+  registerPackage(pkg, options = {}) {
     if (!pkg || !pkg.id) {
       throw new Error('Package must have an id')
     }
@@ -259,6 +259,9 @@ class ExtensionPointManager {
     if (!idValidation.valid) {
       throw new Error(idValidation.firstError.message)
     }
+
+    const skipRollback = options.skipRollback === true
+    const existingRollback = this._rollbacks[pkg.id]
 
     const rollbackContext = {
       disabledExtensions: [],
@@ -327,13 +330,17 @@ class ExtensionPointManager {
     this._resolveByReplacement = originalResolveByReplacement
     this._resolveByMerge = originalResolveByMerge
 
-    this._rollbacks[pkg.id] = reactive({
-      packageId: pkg.id,
-      operationType: 'register',
-      ...rollbackContext,
-      rolledBack: false,
-      createdAt: Date.now(),
-    })
+    if (!skipRollback) {
+      this._rollbacks[pkg.id] = reactive({
+        packageId: pkg.id,
+        operationType: 'register',
+        ...rollbackContext,
+        rolledBack: false,
+        createdAt: Date.now(),
+      })
+    } else if (existingRollback && !existingRollback.rolledBack) {
+      this._rollbacks[pkg.id] = existingRollback
+    }
 
     this._emit('package:registered', { packageId: pkg.id, pkg, rollbackContext })
     this._log('INFO', `Package "${pkg.id}" v${pkg.version || '1.0.0'} registered`)

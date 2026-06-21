@@ -90,7 +90,7 @@ export const useExtensionStore = defineStore('extension', () => {
   })
 
   function syncManagerFromStore() {
-    manager.reset()
+    manager.reset({ keepRollbacks: true })
     for (const point of points.value) {
       manager.definePoint(point.name, backendPointToManager(point))
     }
@@ -118,7 +118,7 @@ export const useExtensionStore = defineStore('extension', () => {
         enabled: pkg.enabled,
       }
       try {
-        manager.registerPackage(pkgData)
+        manager.registerPackage(pkgData, { skipRollback: true })
       } catch (e) {
         console.warn(`[Store] Failed to sync package ${pkg.package_id} to manager:`, e.message)
       }
@@ -150,14 +150,10 @@ export const useExtensionStore = defineStore('extension', () => {
     error.value = null
     try {
       const point = await api.definePoint(data)
-      const existingIdx = points.value.findIndex(p => p.name === point.name)
-      if (existingIdx !== -1) {
-        points.value[existingIdx] = point
-      } else {
-        points.value.push(point)
-      }
-      manager.definePoint(point.name, backendPointToManager(point))
-      await fetchStats()
+      await Promise.all([
+        fetchPoints(),
+        fetchStats(),
+      ])
       return point
     } catch (e) {
       error.value = e.message
@@ -169,11 +165,13 @@ export const useExtensionStore = defineStore('extension', () => {
     error.value = null
     try {
       await api.deletePoint(name)
-      points.value = points.value.filter(p => p.name !== name)
-      extensions.value = extensions.value.filter(e => e.point_name !== name)
-      conflicts.value = conflicts.value.filter(c => c.point_name !== name)
-      manager.removePoint(name)
-      await fetchStats()
+      await Promise.all([
+        fetchPoints(),
+        fetchExtensions(),
+        fetchStats(),
+        fetchConflicts(),
+      ])
+      return true
     } catch (e) {
       error.value = e.message
       throw e
@@ -197,21 +195,13 @@ export const useExtensionStore = defineStore('extension', () => {
     error.value = null
     try {
       const pkg = await api.registerPackage(data)
-      const existingIdx = packages.value.findIndex(p => p.package_id === pkg.package_id)
-      if (existingIdx !== -1) {
-        packages.value[existingIdx] = pkg
-      } else {
-        packages.value.push(pkg)
-      }
-      const pkgExts = (data.extensions || []).map(e => ({
-        ...e,
-        package_id: pkg.package_id,
-      }))
-      const freshAll = await api.getExtensions()
-      extensions.value = freshAll
-      syncManagerFromStore()
-      await fetchStats()
-      await fetchConflicts()
+      await Promise.all([
+        fetchPackages(),
+        fetchExtensions(),
+        fetchStats(),
+        fetchConflicts(),
+        fetchRollbacks(),
+      ])
       return pkg
     } catch (e) {
       error.value = e.message
@@ -223,16 +213,14 @@ export const useExtensionStore = defineStore('extension', () => {
     error.value = null
     try {
       await api.deletePackage(id)
-      packages.value = packages.value.filter(p => p.package_id !== id)
-      const removedExts = extensions.value.filter(e => e.package_id === id)
-      extensions.value = extensions.value.filter(e => e.package_id !== id)
-      conflicts.value = conflicts.value.filter(
-        c => c.existing_package_id !== id && c.incoming_package_id !== id
-      )
-      for (const ext of removedExts) {
-        try { manager.unregister(ext.ext_id) } catch (_) {}
-      }
-      await fetchStats()
+      await Promise.all([
+        fetchPackages(),
+        fetchExtensions(),
+        fetchStats(),
+        fetchConflicts(),
+        fetchRollbacks(),
+      ])
+      return true
     } catch (e) {
       error.value = e.message
       throw e
@@ -261,11 +249,12 @@ export const useExtensionStore = defineStore('extension', () => {
     error.value = null
     try {
       const result = await api.registerExtension(packageId, data)
-      const fresh = await api.getExtensions()
-      extensions.value = fresh
-      await fetchStats()
-      await fetchConflicts()
-      syncManagerFromStore()
+      await Promise.all([
+        fetchExtensions(),
+        fetchStats(),
+        fetchConflicts(),
+        fetchRollbacks(),
+      ])
       return result
     } catch (e) {
       error.value = e.message
@@ -277,9 +266,12 @@ export const useExtensionStore = defineStore('extension', () => {
     error.value = null
     try {
       await api.unregisterExtension(extId)
-      extensions.value = extensions.value.filter(e => e.ext_id !== extId)
-      manager.unregister(extId)
-      await fetchStats()
+      await Promise.all([
+        fetchExtensions(),
+        fetchStats(),
+        fetchConflicts(),
+      ])
+      return true
     } catch (e) {
       error.value = e.message
       throw e
@@ -299,12 +291,11 @@ export const useExtensionStore = defineStore('extension', () => {
     error.value = null
     try {
       const resolved = await api.resolveConflict(id, resolution)
-      const idx = conflicts.value.findIndex(c => c.id === id)
-      if (idx !== -1) conflicts.value[idx] = resolved
-      const fresh = await api.getExtensions()
-      extensions.value = fresh
-      await fetchStats()
-      syncManagerFromStore()
+      await Promise.all([
+        fetchConflicts(),
+        fetchExtensions(),
+        fetchStats(),
+      ])
       return resolved
     } catch (e) {
       error.value = e.message
@@ -314,7 +305,13 @@ export const useExtensionStore = defineStore('extension', () => {
 
   async function checkOverrideImpact(packageId) {
     try {
-      return await api.checkOverrideImpact(packageId)
+      const result = await api.checkOverrideImpact(packageId)
+      await Promise.all([
+        fetchConflicts(),
+        fetchExtensions(),
+        fetchStats(),
+      ])
+      return result
     } catch (e) {
       error.value = e.message
       throw e
@@ -341,15 +338,13 @@ export const useExtensionStore = defineStore('extension', () => {
     error.value = null
     try {
       const result = await api.rollbackPackage(id)
-      packages.value = packages.value.filter(p => p.package_id !== id)
-      extensions.value = extensions.value.filter(e => e.package_id !== id)
-      conflicts.value = conflicts.value.filter(
-        c => c.existing_package_id !== id && c.incoming_package_id !== id
-      )
-      manager.rollbackPackage(id)
-      await fetchStats()
-      await fetchConflicts()
-      await fetchRollbacks()
+      await Promise.all([
+        fetchPackages(),
+        fetchExtensions(),
+        fetchStats(),
+        fetchConflicts(),
+        fetchRollbacks(),
+      ])
       return result
     } catch (e) {
       error.value = e.message
@@ -370,18 +365,20 @@ export const useExtensionStore = defineStore('extension', () => {
   async function init() {
     loading.value = true
     try {
-      const [s, p, pk, e, c] = await Promise.all([
+      const [s, p, pk, e, c, r] = await Promise.all([
         api.getStats(),
         api.getPoints(),
         api.getPackages(),
         api.getExtensions(),
         api.getConflicts(),
+        api.getRollbacks(),
       ])
       stats.value = s
       points.value = p
       packages.value = pk
       extensions.value = e
       conflicts.value = c
+      rollbacks.value = r
       syncManagerFromStore()
     } catch (e) {
       error.value = e.message
@@ -391,12 +388,14 @@ export const useExtensionStore = defineStore('extension', () => {
   }
 
   return {
-    points, packages, extensions, conflicts, stats, loading, error,
+    points, packages, extensions, conflicts, rollbacks, stats,
+    loading, validating, rollingBack, error, lastValidation,
     unresolvedConflicts, activeExtensions, pointsByName,
     fetchStats, fetchPoints, definePoint, deletePoint,
     fetchPackages, registerPackage, deletePackage,
     fetchExtensions, registerExtension, unregisterExtension,
     fetchConflicts, resolveConflict, checkOverrideImpact,
+    validatePackage, rollbackPackage, fetchRollbacks,
     syncManagerFromStore,
     init,
   }
