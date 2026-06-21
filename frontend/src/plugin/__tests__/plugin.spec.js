@@ -71,7 +71,8 @@ describe('createExtensionPlugin', () => {
 
     app.use(plugin)
 
-    expect(app.component('ExtensionPoint')).toBeTruthy()
-    expect(app.component('ExtensionSlot')).toBeTruthy()
+    const components = app._context.components
+    expect(components.ExtensionPoint).toBeTruthy()
+    expect(components.ExtensionSlot).toBeTruthy()
   })
 })
