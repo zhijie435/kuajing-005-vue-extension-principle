@@ -13,6 +13,28 @@ export const EXTENSION_STATES = {
   OVERRIDE_CONFLICT: 'override_conflict',
 }
 
+export const PERMISSION_ACTIONS = {
+  READ_POINT: 'point:read',
+  READ_EXTENSION: 'extension:read',
+  READ_PACKAGE: 'package:read',
+  READ_CONFLICT: 'conflict:read',
+  READ_STATS: 'stats:read',
+  READ_ROLLBACK: 'rollback:read',
+  WRITE_POINT: 'point:write',
+  WRITE_EXTENSION: 'extension:write',
+  WRITE_PACKAGE: 'package:write',
+  REGISTER_PACKAGE: 'package:register',
+  ROLLBACK_PACKAGE: 'package:rollback',
+  RESOLVE_CONFLICT: 'conflict:resolve',
+  CHECK_IMPACT: 'impact:check',
+}
+
+export const PERMISSION_SCOPES = {
+  PUBLIC: 'public',
+  INTERNAL: 'internal',
+  ADMIN: 'admin',
+}
+
 export class OverrideConflictError extends Error {
   constructor(pointName, existingExtension, newExtension) {
     super(
@@ -41,5 +63,29 @@ export class DuplicateExtensionError extends Error {
     this.name = 'DuplicateExtensionError'
     this.extensionId = extensionId
     this.pointName = pointName
+  }
+}
+
+export class PermissionDeniedError extends Error {
+  constructor(action, scope = null, details = null) {
+    const baseMessage = `Permission denied for action "${action}"`
+    const scopeMessage = scope ? ` (required scope: ${scope})` : ''
+    const detailsMessage = details ? `: ${details}` : ''
+    super(baseMessage + scopeMessage + detailsMessage)
+    this.name = 'PermissionDeniedError'
+    this.action = action
+    this.scope = scope
+    this.details = details
+  }
+}
+
+export class PartialRegistrationError extends Error {
+  constructor(packageId, registeredExtensions, failedExtensions, errors) {
+    super(`Package "${packageId}" registered partially: ${registeredExtensions.length} succeeded, ${failedExtensions.length} failed`)
+    this.name = 'PartialRegistrationError'
+    this.packageId = packageId
+    this.registeredExtensions = registeredExtensions
+    this.failedExtensions = failedExtensions
+    this.errors = errors
   }
 }

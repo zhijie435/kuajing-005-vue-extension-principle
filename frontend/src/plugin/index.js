@@ -1,7 +1,17 @@
 import { ExtensionPoint, ExtensionSlot, provideExtensionManager, EXTENSION_MANAGER_KEY } from './ExtensionPointComponent'
 import { createExtensionManager, useExtensionManager, ExtensionPointManager } from './ExtensionPointManager'
 import { useExtensionPoint, useExtension, useOverrideChecker } from './composables'
-import { OVERRIDE_STRATEGIES, EXTENSION_STATES, OverrideConflictError, ExtensionPointNotFoundError, DuplicateExtensionError } from './constants'
+import {
+  OVERRIDE_STRATEGIES,
+  EXTENSION_STATES,
+  PERMISSION_ACTIONS,
+  PERMISSION_SCOPES,
+  OverrideConflictError,
+  ExtensionPointNotFoundError,
+  DuplicateExtensionError,
+  PermissionDeniedError,
+  PartialRegistrationError,
+} from './constants'
 export { ValidationError, ValidationResult, validatePointName, validatePackageId, validatePackageName, validateVersion, validateExtensionId, validateStrategy, validateJsonString, validateOverrideTargets, validatePriority, validateOrder, validatePointDefinition, validatePackageRegistration, validateExtensionRegistration } from './validator'
 
 export function createExtensionPlugin(options = {}) {
@@ -48,9 +58,13 @@ export {
   useOverrideChecker,
   OVERRIDE_STRATEGIES,
   EXTENSION_STATES,
+  PERMISSION_ACTIONS,
+  PERMISSION_SCOPES,
   OverrideConflictError,
   ExtensionPointNotFoundError,
   DuplicateExtensionError,
+  PermissionDeniedError,
+  PartialRegistrationError,
 }
 
 export default createExtensionPlugin

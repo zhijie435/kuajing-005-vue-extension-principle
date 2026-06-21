@@ -2,9 +2,13 @@ import { reactive, computed, toRaw } from 'vue'
 import {
   OVERRIDE_STRATEGIES,
   EXTENSION_STATES,
+  PERMISSION_ACTIONS,
+  PERMISSION_SCOPES,
   OverrideConflictError,
   ExtensionPointNotFoundError,
   DuplicateExtensionError,
+  PermissionDeniedError,
+  PartialRegistrationError,
 } from './constants'
 import {
   validatePointName,
@@ -27,9 +31,78 @@ class ExtensionPointManager {
       logLevel: options.logLevel ?? LOG_LEVELS.WARN,
       onConflict: options.onConflict || null,
       strictOverride: options.strictOverride || false,
+      enablePermissionCheck: options.enablePermissionCheck ?? false,
+      defaultScope: options.defaultScope || PERMISSION_SCOPES.PUBLIC,
+      permissionChecker: options.permissionChecker || null,
+      scopeResolver: options.scopeResolver || null,
     }
     this._listeners = new Map()
     this._logLevel = this._options.logLevel
+    this._currentScope = this._options.defaultScope
+  }
+
+  setScope(scope) {
+    if (!Object.values(PERMISSION_SCOPES).includes(scope)) {
+      throw new Error(`Invalid scope: ${scope}`)
+    }
+    this._currentScope = scope
+    return this
+  }
+
+  getScope() {
+    return this._currentScope
+  }
+
+  _checkPermission(action, options = {}) {
+    if (!this._options.enablePermissionCheck) {
+      return true
+    }
+
+    const requiredScope = options.requiredScope || this._getActionRequiredScope(action)
+    const currentScope = this._options.scopeResolver
+      ? this._options.scopeResolver()
+      : this._currentScope
+
+    if (this._options.permissionChecker) {
+      const result = this._options.permissionChecker(action, currentScope, options)
+      if (result !== true) {
+        throw new PermissionDeniedError(
+          action,
+          requiredScope,
+          typeof result === 'string' ? result : null
+        )
+      }
+      return true
+    }
+
+    const scopeHierarchy = [PERMISSION_SCOPES.PUBLIC, PERMISSION_SCOPES.INTERNAL, PERMISSION_SCOPES.ADMIN]
+    const currentLevel = scopeHierarchy.indexOf(currentScope)
+    const requiredLevel = scopeHierarchy.indexOf(requiredScope)
+
+    if (currentLevel < requiredLevel) {
+      throw new PermissionDeniedError(action, requiredScope)
+    }
+
+    return true
+  }
+
+  _getActionRequiredScope(action) {
+    const scopeMap = {
+      [PERMISSION_ACTIONS.READ_POINT]: PERMISSION_SCOPES.PUBLIC,
+      [PERMISSION_ACTIONS.READ_EXTENSION]: PERMISSION_SCOPES.PUBLIC,
+      [PERMISSION_ACTIONS.READ_PACKAGE]: PERMISSION_SCOPES.PUBLIC,
+      [PERMISSION_ACTIONS.READ_CONFLICT]: PERMISSION_SCOPES.INTERNAL,
+      [PERMISSION_ACTIONS.READ_STATS]: PERMISSION_SCOPES.PUBLIC,
+      [PERMISSION_ACTIONS.READ_ROLLBACK]: PERMISSION_SCOPES.INTERNAL,
+      [PERMISSION_ACTIONS.WRITE_POINT]: PERMISSION_SCOPES.ADMIN,
+      [PERMISSION_ACTIONS.WRITE_EXTENSION]: PERMISSION_SCOPES.INTERNAL,
+      [PERMISSION_ACTIONS.WRITE_PACKAGE]: PERMISSION_SCOPES.ADMIN,
+      [PERMISSION_ACTIONS.REGISTER_PACKAGE]: PERMISSION_SCOPES.INTERNAL,
+      [PERMISSION_ACTIONS.ROLLBACK_PACKAGE]: PERMISSION_SCOPES.ADMIN,
+      [PERMISSION_ACTIONS.RESOLVE_CONFLICT]: PERMISSION_SCOPES.ADMIN,
+      [PERMISSION_ACTIONS.CHECK_IMPACT]: PERMISSION_SCOPES.INTERNAL,
+    }
+    return scopeMap[action] || PERMISSION_SCOPES.ADMIN
   }
 
   validatePackageRegistration(pkg) {
@@ -141,7 +214,7 @@ class ExtensionPointManager {
       } else if (pointConfig) {
         const existingIds = new Set((this._extensions[pointName] || []).map(e => e.id))
         const missing = extDef.overrideTargets.filter(t => !existingIds.has(t))
-        if (missing.length > 0 && existingIds.size > 0) {
+        if (missing.length > 0) {
           result.valid = false
           result.errors.push({
             field: 'overrideTargets',
@@ -440,10 +513,10 @@ class ExtensionPointManager {
         (this._extensions[pointName] || []).map(e => e.id)
       )
       const missing = extension.overrideTargets.filter(t => !existingIds.has(t))
-      if (missing.length > 0 && existingIds.size > 0) {
+      if (missing.length > 0) {
         throw new Error(
           `覆盖目标不存在: ${missing.join(', ')}。` +
-          `当前扩展点 "${pointName}" 的已注册扩展: ${[...existingIds].join(', ')}`
+          `当前扩展点 "${pointName}" 的已注册扩展: ${[...existingIds].join(', ') || '(无)'}`
         )
       }
     }
