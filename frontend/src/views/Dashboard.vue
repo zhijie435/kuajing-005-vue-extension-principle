@@ -582,6 +582,7 @@ async function handleRegisterExtension() {
     return
   }
 
+  const extFormSnapshot = { ...extForm }
   submitting.value = true
   try {
     const data = {
@@ -622,7 +623,41 @@ async function handleRegisterExtension() {
       fieldMap.extId = msg
     }
     setErrorsFromMap(fieldMap)
-    toast.error(`注册失败: ${msg}`)
+    toast.error(`注册失败: ${msg}`, {
+      actions: [
+        {
+          label: '重试',
+          variant: 'primary',
+          onClick: async () => {
+            showRegisterExt.value = true
+            Object.assign(extForm, extFormSnapshot)
+            await handleRegisterExtension()
+          },
+        },
+        {
+          label: '回滚扩展包',
+          variant: 'danger',
+          onClick: async () => {
+            if (extFormSnapshot.packageId) {
+              if (confirm(`确定回滚扩展包 "${extFormSnapshot.packageId}"？该包下所有新添加的数据将被清除。`)) {
+                try {
+                  await store.rollbackPackage(extFormSnapshot.packageId)
+                  toast.success(`扩展包 "${extFormSnapshot.packageId}" 已回滚`)
+                } catch (err) {
+                  toast.warning('回滚失败：' + err.message)
+                }
+              }
+            } else {
+              toast.warning('未选择扩展包，无法回滚')
+            }
+          },
+        },
+        {
+          label: '关闭',
+          onClick: () => {},
+        },
+      ],
+    })
   } finally {
     submitting.value = false
   }
