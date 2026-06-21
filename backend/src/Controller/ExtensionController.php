@@ -141,6 +141,31 @@ class ExtensionController
         return $this->jsonResponse($this->service->getStats());
     }
 
+    public function validatePackage(): array
+    {
+        $data = $this->getRequestBody();
+        if (empty($data['id']) && empty($data['package_id'])) {
+            return $this->jsonResponse(['error' => 'Package id is required'], 400);
+        }
+        $result = $this->service->validatePackageRegistration($data);
+        return $this->jsonResponse($result);
+    }
+
+    public function rollbackPackage(string $packageId): array
+    {
+        $result = $this->service->rollbackPackage($packageId);
+        if (!$result['success']) {
+            return $this->jsonResponse(['error' => $result['message']], 400);
+        }
+        return $this->jsonResponse($result);
+    }
+
+    public function getRollbacks(): array
+    {
+        $packageId = $_GET['package_id'] ?? null;
+        return $this->jsonResponse($this->service->getRollbacks($packageId));
+    }
+
     private function getRequestBody(): array
     {
         $input = file_get_contents('php://input');

@@ -24,6 +24,8 @@ export const api = {
   getPackage: (id) => request(`/packages/${id}`),
   registerPackage: (data) => request('/packages', { method: 'POST', body: JSON.stringify(data) }),
   deletePackage: (id) => request(`/packages/${id}`, { method: 'DELETE' }),
+  validatePackage: (data) => request('/packages/validate', { method: 'POST', body: JSON.stringify(data) }),
+  rollbackPackage: (id) => request(`/packages/${id}/rollback`, { method: 'POST' }),
 
   getExtensions: (point) => request(point ? `/extensions?point=${point}` : '/extensions'),
   registerExtension: (packageId, data) => request(`/packages/${packageId}`, { method: 'POST', body: JSON.stringify(data) }),
@@ -32,4 +34,6 @@ export const api = {
   checkOverrideImpact: (packageId) => request(`/packages/${packageId}/check-override`),
   getConflicts: (params) => request(`/conflicts${params ? '?' + params : ''}`),
   resolveConflict: (id, resolution) => request(`/conflicts/${id}`, { method: 'POST', body: JSON.stringify({ resolution }) }),
+
+  getRollbacks: (packageId) => request(packageId ? `/rollbacks?package_id=${packageId}` : '/rollbacks'),
 }

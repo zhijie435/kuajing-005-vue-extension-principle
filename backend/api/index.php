@@ -46,20 +46,26 @@ try {
         $path === 'packages' && $method === 'GET' => $controller->getPackages(),
         $path === 'packages' && $method === 'POST' => $controller->registerPackage(),
 
+        $path === 'packages/validate' && $method === 'POST' => $controller->validatePackage(),
+
         count($segments) === 2 && $segments[0] === 'packages' && $method === 'GET' => $controller->getPackage($segments[1]),
         count($segments) === 2 && $segments[0] === 'packages' && $method === 'DELETE' => $controller->deletePackage($segments[1]),
+
+        count($segments) === 3 && $segments[0] === 'packages' && $segments[2] === 'rollback' && $method === 'POST' => $controller->rollbackPackage($segments[1]),
+
+        count($segments) === 3 && $segments[0] === 'packages' && $segments[2] === 'check-override' && $method === 'GET' => $controller->checkOverrideImpact($segments[1]),
 
         $path === 'extensions' && $method === 'GET' => $controller->getExtensions(),
 
         count($segments) === 2 && $segments[0] === 'packages' && $segments[1] !== '' && $method === 'POST' => $controller->registerExtension($segments[1]),
-
-        count($segments) === 3 && $segments[0] === 'packages' && $segments[2] === 'check-override' && $method === 'GET' => $controller->checkOverrideImpact($segments[1]),
 
         count($segments) === 2 && $segments[0] === 'extensions' && $method === 'DELETE' => $controller->unregisterExtension($segments[1]),
 
         $path === 'conflicts' && $method === 'GET' => $controller->getConflicts(),
 
         count($segments) === 2 && $segments[0] === 'conflicts' && $method === 'POST' => $controller->resolveConflict((int)$segments[1]),
+
+        $path === 'rollbacks' && $method === 'GET' => $controller->getRollbacks(),
 
         default => (function () {
             http_response_code(404);

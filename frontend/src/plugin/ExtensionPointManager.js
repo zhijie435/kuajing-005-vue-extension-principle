@@ -21,6 +21,7 @@ class ExtensionPointManager {
     this._extensions = reactive({})
     this._packages = reactive({})
     this._conflicts = reactive([])
+    this._rollbacks = reactive({})
     this._options = {
       defaultStrategy: options.defaultStrategy || OVERRIDE_STRATEGIES.LAST_WINS,
       logLevel: options.logLevel ?? LOG_LEVELS.WARN,
@@ -29,6 +30,175 @@ class ExtensionPointManager {
     }
     this._listeners = new Map()
     this._logLevel = this._options.logLevel
+  }
+
+  validatePackageRegistration(pkg) {
+    const result = {
+      valid: true,
+      canInstall: true,
+      errors: [],
+      warnings: [],
+      conflicts: [],
+      extensionValidations: [],
+    }
+
+    if (!pkg || !pkg.id) {
+      result.valid = false
+      result.canInstall = false
+      result.errors.push({ field: 'id', message: '扩展包ID不能为空' })
+      return result
+    }
+
+    const idValidation = validatePackageId(pkg.id)
+    if (!idValidation.valid) {
+      result.valid = false
+      result.errors.push({ field: 'id', message: idValidation.firstError?.message || '扩展包ID无效' })
+    }
+
+    if (!pkg.name || !pkg.name.trim()) {
+      result.valid = false
+      result.errors.push({ field: 'name', message: '扩展包名称不能为空' })
+    }
+
+    if (pkg.version) {
+      const v = String(pkg.version).trim()
+      if (!/^\d+\.\d+\.\d+(-[a-zA-Z0-9.]+)?(\+[a-zA-Z0-9.]+)?$/.test(v)) {
+        result.valid = false
+        result.errors.push({ field: 'version', message: '版本号格式无效，应为 semver 格式' })
+      }
+    }
+
+    const extensions = pkg.extensions || []
+    if (!Array.isArray(extensions)) {
+      result.valid = false
+      result.errors.push({ field: 'extensions', message: 'extensions 必须是数组' })
+      return result
+    }
+
+    extensions.forEach((extDef, idx) => {
+      const extValidation = this._validateExtensionDefinition(extDef)
+      result.extensionValidations.push({
+        index: idx,
+        point: extDef.point || '(unknown)',
+        valid: extValidation.valid,
+        errors: extValidation.errors,
+        warnings: extValidation.warnings,
+        conflicts: extValidation.conflicts,
+      })
+
+      if (!extValidation.valid) {
+        result.valid = false
+      }
+      if (!extValidation.canInstall) {
+        result.canInstall = false
+      }
+      result.warnings = result.warnings.concat(extValidation.warnings)
+      result.conflicts = result.conflicts.concat(extValidation.conflicts)
+      result.errors = result.errors.concat(extValidation.errors)
+    })
+
+    this._emit('package:validated', { packageId: pkg.id, result })
+    return result
+  }
+
+  _validateExtensionDefinition(extDef) {
+    const result = {
+      valid: true,
+      canInstall: true,
+      errors: [],
+      warnings: [],
+      conflicts: [],
+    }
+
+    const pointName = extDef.point || ''
+    if (!pointName) {
+      result.valid = false
+      result.errors.push({ field: 'point', message: '扩展点不能为空' })
+      return result
+    }
+
+    const pointConfig = this._points[pointName]
+    if (!pointConfig) {
+      result.warnings.push({
+        type: 'missing_point',
+        pointName,
+        message: `扩展点 "${pointName}" 尚未定义，注册后该扩展不会生效`,
+      })
+    }
+
+    if (extDef.id) {
+      const idValidation = validateExtensionId(extDef.id)
+      if (!idValidation.valid) {
+        result.valid = false
+        result.errors.push({ field: 'id', message: idValidation.firstError?.message || '扩展ID无效' })
+      }
+    }
+
+    if (extDef.override) {
+      if (!extDef.overrideTargets || !Array.isArray(extDef.overrideTargets) || extDef.overrideTargets.length === 0) {
+        result.valid = false
+        result.errors.push({ field: 'overrideTargets', message: `标记为覆盖扩展时必须指定覆盖目标 (point: ${pointName})` })
+      } else if (pointConfig) {
+        const existingIds = new Set((this._extensions[pointName] || []).map(e => e.id))
+        const missing = extDef.overrideTargets.filter(t => !existingIds.has(t))
+        if (missing.length > 0 && existingIds.size > 0) {
+          result.valid = false
+          result.errors.push({
+            field: 'overrideTargets',
+            message: `覆盖目标不存在: ${missing.join(', ')} (point: ${pointName})`,
+          })
+        }
+      }
+    }
+
+    if (pointConfig) {
+      const existing = this._extensions[pointName] || []
+      if (!pointConfig.multiple && existing.length > 0) {
+        result.conflicts.push({
+          type: 'single_point_conflict',
+          pointName,
+          existingCount: existing.length,
+          strategy: pointConfig.strategy,
+          message: `扩展点 "${pointName}" 配置为单扩展模式，已有 ${existing.length} 个活跃扩展，策略: ${pointConfig.strategy}`,
+        })
+        if (pointConfig.strategy === OVERRIDE_STRATEGIES.THROW) {
+          result.canInstall = false
+        }
+      }
+
+      if (extDef.overrideTargets && Array.isArray(extDef.overrideTargets)) {
+        for (const e of existing) {
+          if (extDef.overrideTargets.includes(e.id)) {
+            result.conflicts.push({
+              type: 'explicit_override',
+              pointName,
+              existingExtension: e.id,
+              existingPackage: e.packageId,
+              incomingExtension: extDef.id || `${pointName}::auto`,
+              resolution: 'incoming_replaces_existing',
+              message: `将覆盖扩展 "${e.id}" (包: ${e.packageId})`,
+            })
+          }
+        }
+      }
+    }
+
+    if (extDef.priority !== undefined && extDef.priority !== null && extDef.priority !== '') {
+      const num = Number(extDef.priority)
+      if (isNaN(num) || !Number.isInteger(num)) {
+        result.valid = false
+        result.errors.push({ field: 'priority', message: `优先级必须为整数 (point: ${pointName})` })
+      }
+    }
+    if (extDef.order !== undefined && extDef.order !== null && extDef.order !== '') {
+      const num = Number(extDef.order)
+      if (isNaN(num) || !Number.isInteger(num)) {
+        result.valid = false
+        result.errors.push({ field: 'order', message: `排序必须为整数 (point: ${pointName})` })
+      }
+    }
+
+    return result
   }
 
   _log(level, ...args) {
@@ -89,9 +259,40 @@ class ExtensionPointManager {
     if (!idValidation.valid) {
       throw new Error(idValidation.firstError.message)
     }
+
+    const rollbackContext = {
+      disabledExtensions: [],
+      createdExtensions: [],
+      createdConflicts: [],
+      previousPackageState: this._packages[pkg.id] ? { ...this._packages[pkg.id] } : null,
+    }
+
+    const originalResolveByReplacement = this._resolveByReplacement.bind(this)
+    this._resolveByReplacement = (pointName, existingExt, newExt) => {
+      rollbackContext.disabledExtensions.push({
+        id: existingExt.id,
+        pointName,
+        previousState: existingExt.state,
+      })
+      originalResolveByReplacement(pointName, existingExt, newExt)
+    }
+
+    const originalResolveByMerge = this._resolveByMerge.bind(this)
+    this._resolveByMerge = (pointName, existingExt, newExt) => {
+      rollbackContext.disabledExtensions.push({
+        id: existingExt.id,
+        pointName,
+        previousState: existingExt.state,
+      })
+      originalResolveByMerge(pointName, existingExt, newExt)
+    }
+
+    const originalConflictCount = this._conflicts.length
+
     if (this._packages[pkg.id]) {
       this._log('WARN', `Package "${pkg.id}" already registered, updating`)
     }
+
     this._packages[pkg.id] = reactive({
       id: pkg.id,
       name: pkg.name || pkg.id,
@@ -102,15 +303,110 @@ class ExtensionPointManager {
       enabled: pkg.enabled !== false,
       installedAt: Date.now(),
     })
-    this._emit('package:registered', { packageId: pkg.id, pkg })
-    this._log('INFO', `Package "${pkg.id}" v${pkg.version || '1.0.0'} registered`)
 
     if (pkg.extensions && pkg.extensions.length > 0) {
       pkg.extensions.forEach(ext => {
-        this.register(pkg.id, ext)
+        try {
+          const registered = this.register(pkg.id, ext)
+          if (registered) {
+            rollbackContext.createdExtensions.push({
+              id: registered.id,
+              pointName: registered.point,
+            })
+          }
+        } catch (e) {
+          this._log('ERROR', `Failed to register extension for package "${pkg.id}":`, e.message)
+        }
       })
     }
+
+    for (let i = originalConflictCount; i < this._conflicts.length; i++) {
+      rollbackContext.createdConflicts.push(this._conflicts[i].id)
+    }
+
+    this._resolveByReplacement = originalResolveByReplacement
+    this._resolveByMerge = originalResolveByMerge
+
+    this._rollbacks[pkg.id] = reactive({
+      packageId: pkg.id,
+      operationType: 'register',
+      ...rollbackContext,
+      rolledBack: false,
+      createdAt: Date.now(),
+    })
+
+    this._emit('package:registered', { packageId: pkg.id, pkg, rollbackContext })
+    this._log('INFO', `Package "${pkg.id}" v${pkg.version || '1.0.0'} registered`)
     return this
+  }
+
+  rollbackPackage(packageId) {
+    const rollback = this._rollbacks[packageId]
+    if (!rollback || rollback.rolledBack) {
+      this._log('WARN', `No rollback data for package "${packageId}", will perform simple unregister`)
+      this._simpleUnregisterPackage(packageId)
+      return { success: false, message: `没有可回滚的记录，已执行删除操作` }
+    }
+
+    const result = {
+      success: true,
+      restoredExtensions: [],
+      removedExtensions: [],
+      removedConflicts: [],
+    }
+
+    rollback.disabledExtensions.forEach(info => {
+      const extList = this._extensions[info.pointName]
+      if (extList) {
+        const ext = extList.find(e => e.id === info.id)
+        if (ext) {
+          ext.state = info.previousState || EXTENSION_STATES.ACTIVE
+          result.restoredExtensions.push(info.id)
+        }
+      }
+    })
+
+    rollback.createdExtensions.forEach(info => {
+      const extList = this._extensions[info.pointName]
+      if (extList) {
+        const idx = extList.findIndex(e => e.id === info.id)
+        if (idx !== -1) {
+          extList.splice(idx, 1)
+          result.removedExtensions.push(info.id)
+        }
+      }
+    })
+
+    if (rollback.createdConflicts.length > 0) {
+      this._conflicts = this._conflicts.filter(c => !rollback.createdConflicts.includes(c.id))
+      result.removedConflicts = rollback.createdConflicts
+    }
+
+    if (rollback.previousPackageState) {
+      this._packages[packageId] = reactive(rollback.previousPackageState)
+    } else {
+      delete this._packages[packageId]
+    }
+
+    rollback.rolledBack = true
+    rollback.rolledBackAt = Date.now()
+
+    this._emit('package:rolledback', { packageId, result })
+    this._log('INFO', `Package "${packageId}" rolled back`)
+    return result
+  }
+
+  _simpleUnregisterPackage(packageId) {
+    const pkg = this._packages[packageId]
+    if (!pkg) return
+
+    for (const pointName of Object.keys(this._extensions)) {
+      this._extensions[pointName] = this._extensions[pointName].filter(e => e.packageId !== packageId)
+    }
+    this._conflicts = this._conflicts.filter(
+      c => c.existingExtension?.packageId !== packageId && c.incomingExtension?.packageId !== packageId
+    )
+    delete this._packages[packageId]
   }
 
   register(packageId, extension) {
@@ -516,6 +812,32 @@ class ExtensionPointManager {
     }
   }
 
+  getRollback(packageId) {
+    return this._rollbacks[packageId] || null
+  }
+
+  getRollbacks() {
+    return Object.values(this._rollbacks)
+  }
+
+  canRollbackPackage(packageId) {
+    const rb = this._rollbacks[packageId]
+    return rb && !rb.rolledBack
+  }
+
+  validateAndRegisterPackage(pkg) {
+    const validation = this.validatePackageRegistration(pkg)
+    if (!validation.valid) {
+      return { success: false, validation, registered: null }
+    }
+    try {
+      this.registerPackage(pkg)
+      return { success: true, validation, registered: this._packages[pkg.id] }
+    } catch (e) {
+      return { success: false, validation, registered: null, error: e.message }
+    }
+  }
+
   reset() {
     for (const key of Object.keys(this._points)) {
       delete this._points[key]
@@ -525,6 +847,9 @@ class ExtensionPointManager {
     }
     for (const key of Object.keys(this._packages)) {
       delete this._packages[key]
+    }
+    for (const key of Object.keys(this._rollbacks)) {
+      delete this._rollbacks[key]
     }
     this._conflicts.splice(0, this._conflicts.length)
     this._log('INFO', 'ExtensionPointManager reset')

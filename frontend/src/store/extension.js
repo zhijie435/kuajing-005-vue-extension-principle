@@ -73,9 +73,13 @@ export const useExtensionStore = defineStore('extension', () => {
   const packages = ref([])
   const extensions = ref([])
   const conflicts = ref([])
+  const rollbacks = ref([])
   const stats = ref({ points: 0, extensions: 0, active: 0, packages: 0, conflicts: 0, unresolved: 0 })
   const loading = ref(false)
+  const validating = ref(false)
+  const rollingBack = ref(false)
   const error = ref(null)
+  const lastValidation = ref(null)
 
   const unresolvedConflicts = computed(() => conflicts.value.filter(c => !c.resolved))
   const activeExtensions = computed(() => extensions.value.filter(e => e.state === EXTENSION_STATES.ACTIVE))
@@ -302,6 +306,52 @@ export const useExtensionStore = defineStore('extension', () => {
     } catch (e) {
       error.value = e.message
       throw e
+    }
+  }
+
+  async function validatePackage(data) {
+    validating.value = true
+    error.value = null
+    try {
+      const result = await api.validatePackage(data)
+      lastValidation.value = result
+      return result
+    } catch (e) {
+      error.value = e.message
+      throw e
+    } finally {
+      validating.value = false
+    }
+  }
+
+  async function rollbackPackage(id) {
+    rollingBack.value = true
+    error.value = null
+    try {
+      const result = await api.rollbackPackage(id)
+      packages.value = packages.value.filter(p => p.package_id !== id)
+      extensions.value = extensions.value.filter(e => e.package_id !== id)
+      conflicts.value = conflicts.value.filter(
+        c => c.existing_package_id !== id && c.incoming_package_id !== id
+      )
+      manager.rollbackPackage(id)
+      await fetchStats()
+      await fetchConflicts()
+      await fetchRollbacks()
+      return result
+    } catch (e) {
+      error.value = e.message
+      throw e
+    } finally {
+      rollingBack.value = false
+    }
+  }
+
+  async function fetchRollbacks(packageId) {
+    try {
+      rollbacks.value = await api.getRollbacks(packageId)
+    } catch (e) {
+      console.error('Failed to fetch rollbacks:', e)
     }
   }
 

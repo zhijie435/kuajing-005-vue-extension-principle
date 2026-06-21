@@ -2,7 +2,7 @@
 
 namespace App\Service;
 
-use App\Model\{ExtensionPoint, Extension, Package, OverrideConflict};
+use App\Model\{ExtensionPoint, Extension, Package, OverrideConflict, PackageRollback};
 use PDO;
 
 class ExtensionService
@@ -12,6 +12,165 @@ class ExtensionService
     public function __construct(PDO $db)
     {
         $this->db = $db;
+    }
+
+    public function validatePackageRegistration(array $pkgData): array
+    {
+        $result = [
+            'valid' => true,
+            'can_install' => true,
+            'errors' => [],
+            'warnings' => [],
+            'conflicts' => [],
+            'extension_validations' => [],
+        ];
+
+        $pkgId = $pkgData['id'] ?? $pkgData['package_id'] ?? null;
+        if (!$pkgId) {
+            $result['valid'] = false;
+            $result['can_install'] = false;
+            $result['errors'][] = ['field' => 'package_id', 'message' => '扩展包ID不能为空'];
+            return $result;
+        }
+
+        if (!preg_match('/^[a-zA-Z][a-zA-Z0-9_\-]*(\.[a-zA-Z][a-zA-Z0-9_\-]*)*$/', trim($pkgId))) {
+            $result['valid'] = false;
+            $result['errors'][] = ['field' => 'package_id', 'message' => '扩展包ID格式无效'];
+        }
+
+        if (empty($pkgData['name'])) {
+            $result['valid'] = false;
+            $result['errors'][] = ['field' => 'name', 'message' => '扩展包名称不能为空'];
+        }
+
+        if (!empty($pkgData['version']) && !preg_match('/^\d+\.\d+\.\d+(-[a-zA-Z0-9.]+)?(\+[a-zA-Z0-9.]+)?$/', trim($pkgData['version']))) {
+            $result['valid'] = false;
+            $result['errors'][] = ['field' => 'version', 'message' => '版本号格式无效，应为 semver 格式'];
+        }
+
+        $extensions = $pkgData['extensions'] ?? [];
+        if (!is_array($extensions)) {
+            $result['valid'] = false;
+            $result['errors'][] = ['field' => 'extensions', 'message' => 'extensions 必须是数组'];
+            return $result;
+        }
+
+        foreach ($extensions as $idx => $extDef) {
+            $extValidation = $this->validateExtensionDefinition($extDef);
+            $result['extension_validations'][] = [
+                'index' => $idx,
+                'point' => $extDef['point'] ?? '(unknown)',
+                'valid' => $extValidation['valid'],
+                'errors' => $extValidation['errors'],
+                'warnings' => $extValidation['warnings'],
+                'conflicts' => $extValidation['conflicts'],
+            ];
+
+            if (!$extValidation['valid']) {
+                $result['valid'] = false;
+            }
+            if (!$extValidation['can_install']) {
+                $result['can_install'] = false;
+            }
+            $result['warnings'] = array_merge($result['warnings'], $extValidation['warnings']);
+            $result['conflicts'] = array_merge($result['conflicts'], $extValidation['conflicts']);
+            $result['errors'] = array_merge($result['errors'], $extValidation['errors']);
+        }
+
+        return $result;
+    }
+
+    private function validateExtensionDefinition(array $extDef): array
+    {
+        $result = [
+            'valid' => true,
+            'can_install' => true,
+            'errors' => [],
+            'warnings' => [],
+            'conflicts' => [],
+        ];
+
+        $pointName = $extDef['point'] ?? '';
+        if (!$pointName) {
+            $result['valid'] = false;
+            $result['errors'][] = ['field' => 'point', 'message' => '扩展点不能为空'];
+            return $result;
+        }
+
+        $point = $this->getPoint($pointName);
+        if (!$point) {
+            $result['warnings'][] = [
+                'type' => 'missing_point',
+                'point_name' => $pointName,
+                'message' => "扩展点 \"{$pointName}\" 尚未定义，注册后该扩展不会生效",
+            ];
+        }
+
+        if (!empty($extDef['id']) && !is_string($extDef['id'])) {
+            $result['valid'] = false;
+            $result['errors'][] = ['field' => 'id', 'message' => '扩展ID必须为字符串'];
+        }
+
+        if (!empty($extDef['override'])) {
+            if (empty($extDef['overrideTargets']) || !is_array($extDef['overrideTargets']) || count($extDef['overrideTargets']) === 0) {
+                $result['valid'] = false;
+                $result['errors'][] = ['field' => 'overrideTargets', 'message' => "标记为覆盖扩展时必须指定覆盖目标 (point: {$pointName})"];
+            } elseif ($point) {
+                $existingExts = $this->getActiveExtensions($pointName);
+                $existingIds = array_map(fn($e) => $e->ext_id, $existingExts);
+                $missing = array_diff($extDef['overrideTargets'], $existingIds);
+                if (count($missing) > 0 && count($existingIds) > 0) {
+                    $result['valid'] = false;
+                    $result['errors'][] = [
+                        'field' => 'overrideTargets',
+                        'message' => "覆盖目标不存在: " . implode(', ', $missing) . " (point: {$pointName})",
+                    ];
+                }
+            }
+        }
+
+        if ($point) {
+            $existingExts = $this->getActiveExtensions($pointName);
+            if (!$point->multiple && count($existingExts) > 0) {
+                $result['conflicts'][] = [
+                    'type' => 'single_point_conflict',
+                    'point_name' => $pointName,
+                    'existing_count' => count($existingExts),
+                    'strategy' => $point->strategy,
+                    'message' => "扩展点 \"{$pointName}\" 配置为单扩展模式，已有 " . count($existingExts) . " 个活跃扩展，策略: {$point->strategy}",
+                ];
+                if ($point->strategy === 'throw') {
+                    $result['can_install'] = false;
+                }
+            }
+
+            if (!empty($extDef['overrideTargets']) && is_array($extDef['overrideTargets'])) {
+                foreach ($existingExts as $existing) {
+                    if (in_array($existing->ext_id, $extDef['overrideTargets'])) {
+                        $result['conflicts'][] = [
+                            'type' => 'explicit_override',
+                            'point_name' => $pointName,
+                            'existing_ext_id' => $existing->ext_id,
+                            'existing_package_id' => $existing->package_id,
+                            'incoming_ext_id' => $extDef['id'] ?? "{$pointName}::auto",
+                            'resolution' => 'incoming_replaces_existing',
+                            'message' => "将覆盖扩展 \"{$existing->ext_id}\" (包: {$existing->package_id})",
+                        ];
+                    }
+                }
+            }
+        }
+
+        if (isset($extDef['priority']) && !is_numeric($extDef['priority'])) {
+            $result['valid'] = false;
+            $result['errors'][] = ['field' => 'priority', 'message' => "优先级必须为数字 (point: {$pointName})"];
+        }
+        if (isset($extDef['order']) && !is_numeric($extDef['order'])) {
+            $result['valid'] = false;
+            $result['errors'][] = ['field' => 'order', 'message' => "排序必须为数字 (point: {$pointName})"];
+        }
+
+        return $result;
     }
 
     public function definePoint(array $data): ExtensionPoint
@@ -110,7 +269,7 @@ class ExtensionService
         return $stmt->execute([':package_id' => $packageId]) && $stmt->rowCount() > 0;
     }
 
-    public function registerExtension(string $packageId, array $data): array
+    public function registerExtension(string $packageId, array $data, ?array &$rollbackContext = null): array
     {
         $pointName = $data['point'] ?? '';
         $point = $this->getPoint($pointName);
@@ -139,16 +298,41 @@ class ExtensionService
 
         $conflicts = $this->checkOverrideConflicts($pointName, $ext, $point);
 
+        $disabledExtIds = [];
+        $createdConflictIds = [];
+
         if (!empty($conflicts)) {
-            $resolvedConflicts = $this->resolveConflicts($pointName, $ext, $conflicts, $point);
+            $resolvedConflicts = $this->resolveConflicts($pointName, $ext, $conflicts, $point, $disabledExtIds);
             foreach ($resolvedConflicts as $conflict) {
-                $this->persistConflict($conflict);
+                $conflictId = $this->persistConflict($conflict);
+                if ($conflictId) {
+                    $createdConflictIds[] = $conflictId;
+                }
             }
         } else {
             $ext->state = 'active';
         }
 
         $this->persistExtension($ext);
+
+        if ($rollbackContext !== null) {
+            if (!isset($rollbackContext['disabled_extensions'])) {
+                $rollbackContext['disabled_extensions'] = [];
+            }
+            if (!isset($rollbackContext['created_conflicts'])) {
+                $rollbackContext['created_conflicts'] = [];
+            }
+            if (!isset($rollbackContext['created_extensions'])) {
+                $rollbackContext['created_extensions'] = [];
+            }
+            $rollbackContext['disabled_extensions'] = array_unique(
+                array_merge($rollbackContext['disabled_extensions'], $disabledExtIds)
+            );
+            $rollbackContext['created_conflicts'] = array_unique(
+                array_merge($rollbackContext['created_conflicts'], $createdConflictIds)
+            );
+            $rollbackContext['created_extensions'][] = $extId;
+        }
 
         return [
             'extension' => $ext->toArray(),
@@ -338,7 +522,7 @@ class ExtensionService
         return $conflicts;
     }
 
-    private function resolveConflicts(string $pointName, Extension &$newExt, array $conflicts, ExtensionPoint $point): array
+    private function resolveConflicts(string $pointName, Extension &$newExt, array $conflicts, ExtensionPoint $point, array &$disabledExtIds = []): array
     {
         $resolved = [];
         $strategy = $point->strategy;
@@ -356,9 +540,14 @@ class ExtensionService
                 'resolution' => null,
             ];
 
+            $disableExt = function ($extId) use (&$disabledExtIds) {
+                $disabledExtIds[] = $extId;
+            };
+
             if ($conflict['resolution'] === 'incoming_replaces_existing') {
                 $this->db->prepare("UPDATE extensions SET state = 'disabled' WHERE ext_id = :eid")
                     ->execute([':eid' => $conflict['existing']->ext_id]);
+                $disableExt($conflict['existing']->ext_id);
                 $newExt->state = 'active';
                 $record['resolved'] = true;
                 $record['resolution'] = 'incoming_override';
@@ -374,6 +563,7 @@ class ExtensionService
                     case 'last_wins':
                         $this->db->prepare("UPDATE extensions SET state = 'disabled' WHERE ext_id = :eid")
                             ->execute([':eid' => $conflict['existing']->ext_id]);
+                        $disableExt($conflict['existing']->ext_id);
                         $newExt->state = 'active';
                         $record['resolved'] = true;
                         $record['resolution'] = 'last_wins';
@@ -393,6 +583,7 @@ class ExtensionService
                         $newExt->props = array_merge($conflict['existing']->props ?? [], $newExt->props ?? []);
                         $this->db->prepare("UPDATE extensions SET state = 'disabled' WHERE ext_id = :eid")
                             ->execute([':eid' => $conflict['existing']->ext_id]);
+                        $disableExt($conflict['existing']->ext_id);
                         $record['resolved'] = true;
                         $record['resolution'] = 'merged';
                         break;
@@ -433,7 +624,7 @@ class ExtensionService
         $ext->id = (int)$this->db->lastInsertId();
     }
 
-    private function persistConflict(array $conflict): void
+    private function persistConflict(array $conflict): ?int
     {
         $stmt = $this->db->prepare(
             "INSERT INTO override_conflicts (point_name, type, existing_ext_id, existing_package_id, incoming_ext_id, incoming_package_id, strategy, resolved, resolution)
@@ -450,5 +641,125 @@ class ExtensionService
             ':resolved' => $conflict['resolved'] ? 1 : 0,
             ':resolution' => $conflict['resolution'],
         ]);
+        return (int)$this->db->lastInsertId() ?: null;
+    }
+
+    public function createRollbackRecord(string $packageId, array $rollbackContext): PackageRollback
+    {
+        $stmt = $this->db->prepare(
+            "INSERT INTO package_rollbacks (package_id, operation_type, disabled_extensions, created_conflicts)
+             VALUES (:package_id, :operation_type, :disabled_extensions, :created_conflicts)"
+        );
+        $stmt->execute([
+            ':package_id' => $packageId,
+            ':operation_type' => 'register',
+            ':disabled_extensions' => !empty($rollbackContext['disabled_extensions']) ? json_encode($rollbackContext['disabled_extensions']) : null,
+            ':created_conflicts' => !empty($rollbackContext['created_conflicts']) ? json_encode($rollbackContext['created_conflicts']) : null,
+        ]);
+        $id = (int)$this->db->lastInsertId();
+        $rb = PackageRollback::fromArray([
+            'id' => $id,
+            'package_id' => $packageId,
+            'operation_type' => 'register',
+            'disabled_extensions' => $rollbackContext['disabled_extensions'] ?? null,
+            'created_conflicts' => $rollbackContext['created_conflicts'] ?? null,
+            'rolled_back' => false,
+            'created_at' => date('Y-m-d H:i:s'),
+        ]);
+        $rb->id = $id;
+        return $rb;
+    }
+
+    public function rollbackPackage(string $packageId): array
+    {
+        $result = [
+            'success' => false,
+            'message' => '',
+            'restored_extensions' => [],
+            'removed_extensions' => [],
+            'removed_conflicts' => [],
+            'rollback_id' => null,
+        ];
+
+        $pkg = $this->getPackage($packageId);
+        if (!$pkg) {
+            $result['message'] = "扩展包 \"{$packageId}\" 不存在";
+            return $result;
+        }
+
+        $stmt = $this->db->prepare(
+            "SELECT * FROM package_rollbacks WHERE package_id = :pid AND rolled_back = 0 ORDER BY created_at DESC LIMIT 1"
+        );
+        $stmt->execute([':pid' => $packageId]);
+        $row = $stmt->fetch();
+        if (!$row) {
+            $result['message'] = "没有可回滚的记录，将执行删除操作";
+            $this->db->prepare("DELETE FROM extensions WHERE package_id = :pid")->execute([':pid' => $packageId]);
+            $this->db->prepare("DELETE FROM packages WHERE package_id = :pid")->execute([':pid' => $packageId]);
+            $result['success'] = true;
+            return $result;
+        }
+
+        $rollback = PackageRollback::fromArray($row);
+
+        $this->db->beginTransaction();
+        try {
+            $disabledExts = $rollback->disabled_extensions ?? [];
+            if (is_array($disabledExts) && count($disabledExts) > 0) {
+                $placeholders = implode(',', array_fill(0, count($disabledExts), '?'));
+                $restoreStmt = $this->db->prepare("UPDATE extensions SET state = 'active' WHERE ext_id IN ({$placeholders})");
+                $restoreStmt->execute($disabledExts);
+                $result['restored_extensions'] = $disabledExts;
+            }
+
+            $createdExtsStmt = $this->db->prepare("SELECT ext_id FROM extensions WHERE package_id = :pid");
+            $createdExtsStmt->execute([':pid' => $packageId]);
+            $createdExtIds = array_column($createdExtsStmt->fetchAll(), 'ext_id');
+
+            if (count($createdExtIds) > 0) {
+                $placeholders = implode(',', array_fill(0, count($createdExtIds), '?'));
+                $this->db->prepare("DELETE FROM extensions WHERE ext_id IN ({$placeholders})")
+                    ->execute($createdExtIds);
+                $result['removed_extensions'] = $createdExtIds;
+            }
+
+            $conflictIds = $rollback->created_conflicts ?? [];
+            if (is_array($conflictIds) && count($conflictIds) > 0) {
+                $placeholders = implode(',', array_fill(0, count($conflictIds), '?'));
+                $this->db->prepare("DELETE FROM override_conflicts WHERE id IN ({$placeholders})")
+                    ->execute($conflictIds);
+                $result['removed_conflicts'] = $conflictIds;
+            }
+
+            $this->db->prepare("DELETE FROM packages WHERE package_id = :pid")->execute([':pid' => $packageId]);
+
+            $this->db->prepare(
+                "UPDATE package_rollbacks SET rolled_back = 1, rolled_back_at = datetime('now') WHERE id = :id"
+            )->execute([':id' => $rollback->id]);
+
+            $this->db->commit();
+            $result['success'] = true;
+            $result['rollback_id'] = $rollback->id;
+            $result['message'] = "扩展包 \"{$packageId}\" 回滚成功";
+        } catch (\Throwable $e) {
+            $this->db->rollBack();
+            $result['message'] = "回滚失败: " . $e->getMessage();
+        }
+
+        return $result;
+    }
+
+    public function getRollbacks(?string $packageId = null): array
+    {
+        $sql = "SELECT * FROM package_rollbacks WHERE 1=1";
+        $params = [];
+        if ($packageId) {
+            $sql .= " AND package_id = :pid";
+            $params[':pid'] = $packageId;
+        }
+        $sql .= " ORDER BY created_at DESC LIMIT 50";
+        $stmt = $this->db->prepare($sql);
+        $stmt->execute($params);
+        return array_map(fn($r) => PackageRollback::fromArray($r), $stmt->fetchAll());
     }
 }

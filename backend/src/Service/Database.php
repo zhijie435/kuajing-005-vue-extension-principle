@@ -95,10 +95,23 @@ class Database
             detected_at TEXT NOT NULL DEFAULT (datetime('now'))
         )");
 
+        $db->exec("CREATE TABLE IF NOT EXISTS package_rollbacks (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            package_id TEXT NOT NULL,
+            operation_type TEXT NOT NULL DEFAULT 'register',
+            disabled_extensions TEXT,
+            created_conflicts TEXT,
+            rolled_back INTEGER NOT NULL DEFAULT 0,
+            rolled_back_at TEXT,
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        )");
+
         $db->exec("CREATE INDEX IF NOT EXISTS idx_extensions_point ON extensions(point_name)");
         $db->exec("CREATE INDEX IF NOT EXISTS idx_extensions_package ON extensions(package_id)");
         $db->exec("CREATE INDEX IF NOT EXISTS idx_extensions_state ON extensions(state)");
         $db->exec("CREATE INDEX IF NOT EXISTS idx_conflicts_point ON override_conflicts(point_name)");
         $db->exec("CREATE INDEX IF NOT EXISTS idx_conflicts_resolved ON override_conflicts(resolved)");
+        $db->exec("CREATE INDEX IF NOT EXISTS idx_rollbacks_package ON package_rollbacks(package_id)");
+        $db->exec("CREATE INDEX IF NOT EXISTS idx_rollbacks_rolled_back ON package_rollbacks(rolled_back)");
     }
 }

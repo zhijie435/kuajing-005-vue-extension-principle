@@ -182,3 +182,47 @@ class OverrideConflict
         ];
     }
 }
+
+class PackageRollback
+{
+    public ?int $id = null;
+    public string $package_id;
+    public string $operation_type;
+    public ?array $disabled_extensions = null;
+    public ?array $created_conflicts = null;
+    public bool $rolled_back = false;
+    public ?string $rolled_back_at = null;
+    public string $created_at;
+
+    public static function fromArray(array $data): self
+    {
+        $rb = new self();
+        $rb->id = $data['id'] ?? null;
+        $rb->package_id = $data['package_id'] ?? '';
+        $rb->operation_type = $data['operation_type'] ?? 'register';
+        $rb->disabled_extensions = isset($data['disabled_extensions'])
+            ? (is_string($data['disabled_extensions']) ? json_decode($data['disabled_extensions'], true) : $data['disabled_extensions'])
+            : null;
+        $rb->created_conflicts = isset($data['created_conflicts'])
+            ? (is_string($data['created_conflicts']) ? json_decode($data['created_conflicts'], true) : $data['created_conflicts'])
+            : null;
+        $rb->rolled_back = (bool)($data['rolled_back'] ?? false);
+        $rb->rolled_back_at = $data['rolled_back_at'] ?? null;
+        $rb->created_at = $data['created_at'] ?? date('Y-m-d H:i:s');
+        return $rb;
+    }
+
+    public function toArray(): array
+    {
+        return [
+            'id' => $this->id,
+            'package_id' => $this->package_id,
+            'operation_type' => $this->operation_type,
+            'disabled_extensions' => $this->disabled_extensions,
+            'created_conflicts' => $this->created_conflicts,
+            'rolled_back' => $this->rolled_back,
+            'rolled_back_at' => $this->rolled_back_at,
+            'created_at' => $this->created_at,
+        ];
+    }
+}
