@@ -838,7 +838,10 @@ class ExtensionPointManager {
     }
   }
 
-  reset() {
+  reset(options = {}) {
+    const keepRollbacks = options.keepRollbacks === true
+    const preservedRollbacks = keepRollbacks ? { ...this._rollbacks } : null
+
     for (const key of Object.keys(this._points)) {
       delete this._points[key]
     }
@@ -852,7 +855,12 @@ class ExtensionPointManager {
       delete this._rollbacks[key]
     }
     this._conflicts.splice(0, this._conflicts.length)
-    this._log('INFO', 'ExtensionPointManager reset')
+
+    if (preservedRollbacks) {
+      Object.assign(this._rollbacks, preservedRollbacks)
+    }
+
+    this._log('INFO', 'ExtensionPointManager reset' + (keepRollbacks ? ' (rollbacks preserved)' : ''))
   }
 }
 
